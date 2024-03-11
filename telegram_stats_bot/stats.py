@@ -209,7 +209,7 @@ class StatsRunner(object):
             df.columns = ['User', 'lquery', 'Percent']
         else:
             df.columns = ['User', 'Total Messages', 'Percent']
-        df['User'] = df['User'].str.replace(r'[^\x00-\x7F]|[@]', "", regex=True)  # Drop emoji and @
+#        df['User'] = df['User'].str.replace(r'[^\x00-\x7F]|[@]', "", regex=True)  # Drop emoji and @
 
         out_text = df.iloc[:n].to_string(index=False, header=True, float_format=lambda x: f"{x:.1f}")
 
@@ -845,7 +845,7 @@ class StatsRunner(object):
         user_dict = {'user': {user_id: value[0] for user_id, value in self.users.items()}}
         df = df.loc[df.user.isin(list(user_dict['user'].keys()))]  # Filter out users with no names
         df = df.replace(user_dict)  # Replace user ids with names
-        df['user'] = df['user'].str.replace(r'[^\x00-\x7F]', "", regex=True)
+#        df['user'] = df['user'].str.replace(r'[^\x00-\x7F]', "", regex=True)
 
         if agg:
             df = df.pivot_table(index=['dow', 'hour'], columns='user', values='messages', aggfunc='sum')
