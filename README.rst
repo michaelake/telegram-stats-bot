@@ -192,7 +192,7 @@ A complete command might look like:
 
 .. code:: shell
 
-    $ python -m telegram_stats_bot.main --tz="America/Toronto" "110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw" "postgresql://telegram:CoolPassword@localhost/telegram_bot"
+    $ python -m telegram_stats_bot.main --tz="America/Sao_Paulo" "110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw" "postgresql://telegram:CoolPassword@localhost/telegram_bot"
 
 On startup, the bot will attempt to create the database and tables, if they do not already exist.
 If you do not know the chat's id and have set it to 0 as mentioned above, you can send the ``/chatid`` command inside
@@ -218,7 +218,7 @@ To import data, simply call:
 
 .. code:: shell
 
-    $ python -m telegram_stats_bot.json_dump_parser "/some/path/to/dump.json" "postgresql://telegram:CoolPassword@localhost/telegram_bot" --tz="America/Toronto"
+    $ python -m telegram_stats_bot.json_dump_parser "/some/path/to/dump.json" "postgresql://telegram:CoolPassword@localhost/telegram_bot" --tz="America/Sao_Paulo"
 
 Where the first argument is the path to the json dump, the second is the db connection string, as above, and the optional `tz` argument should be the time zone of the system used to dump the json.
 

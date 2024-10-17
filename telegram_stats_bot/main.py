@@ -26,14 +26,15 @@ import shlex
 import warnings
 import os
 import telegram
-import datetime
 import random
+import appdirs
+import pytz
+from datetime import datetime, time
 from telegram.error import BadRequest
 from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackContext, JobQueue, ContextTypes, Application, \
     filters
 from telegram import Update
-import appdirs
-
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .parse import parse_message
 from .log_storage import JSONStore, PostgresStore
 from .stats import StatsRunner, get_parser, HelpException
@@ -231,14 +232,14 @@ async def bday_info(update: Update, context: CallbackContext):
         if not text:
             text = "Ninguém me disse os aniversários."
     elif opt == 'mes':
-        current_month = datetime.datetime.now().month
-        month_bday = {user: date for user, date in bday_dict.items() if datetime.datetime.strptime(date, '%d/%m/%Y').month == current_month}
+        current_month = datetime.now().month
+        month_bday = {user: date for user, date in bday_dict.items() if datetime.strptime(date, '%d/%m/%Y').month == current_month}
         if len(month_bday.items()) > 0:
             text = "\n".join([f"{user}: {date}" for user, date in month_bday.items()])
         else: text = 'Ninguém faz aniversário nesse mês!'
     elif opt == 'dia':
-        current_day = datetime.datetime.now().day
-        day_bday = {user: date for user, date in bday_dict.items() if datetime.datetime.strptime(date, '%d/%m/%Y').day == current_day}
+        current_day = datetime.now().day
+        day_bday = {user: date for user, date in bday_dict.items() if datetime.strptime(date, '%d/%m/%Y').day == current_day}
         if len(day_bday.items()) > 0:
             text = "Parabéns " + " e ".join([f"{user}" for user, date in day_bday.items()]) + "!\n\nhttps://www.youtube.com/watch?v=1Mcdh2Vf2Xk"
             md_flag = False
@@ -272,7 +273,7 @@ async def dice_dicer(update: Update, context: CallbackContext):
     await update.message.reply_text(text=text)
 
 
-async def info_giver(update: Update, context: CallbackContext):
+async def info_giver(update: Update):
     text = '''
     Aqui está tudo que eu sei fazer!
     
@@ -285,7 +286,7 @@ async def info_giver(update: Update, context: CallbackContext):
         'add' - Adiciona um novo aniversariante na agenda,
         'remove' - Remove um aniversariante da agenda,
             
-    /stats, /s: 
+    /stats, /s (bstats, bs no contexto betamiko): 
         'counts' - "get_chat_counts",
         'count-dist' - 'get_chat_ecdf',
         'hours' - "get_counts_by_hour",
@@ -319,6 +320,31 @@ async def send_help(text: str, context: CallbackContext, update: Update):
         await update.message.reply_text(text=f"```\n{text}\n```",
                                         parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
 
+'''async def check_dates_helper(update: Update, context: CallbackContext):
+    chat_id = update.effective_chat.id
+    await update.message.reply_text('help')
+    
+    context.job_queue.run_daily(
+        check_dates_and_notify,
+        time=time(hour=12, minute=20),
+        chat_id=chat_id
+    )'''
+    
+async def check_dates_and_notify(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Checking birthdays")
+    bday_dict = {}
+    bday_json = os.path.join(other_path, 'bday.json')
+    if os.path.exists(bday_json):
+        with open(bday_json, 'r') as file:
+            bday_dict.update(json.load(file))
+            
+    today = datetime.now().strftime('%d/%m/%Y')
+       
+    for user, date in bday_dict.items():
+            if today == date:
+                # Envia a mensagem de aniversário
+                await context.bot.send_message(chat_id=context.job.chat_id,
+                                               text=f"Hoje é o aniversário de {user}!")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -355,13 +381,13 @@ if __name__ == '__main__':
     store = PostgresStore(args.postgres_url)
     stats = StatsRunner(store.engine, tz=args.tz)
 
-    stats_handler = CommandHandler(['stats', 's'], print_stats)
+    stats_handler = CommandHandler(['bstats', 'bs'], print_stats)
     application.add_handler(stats_handler)
 
     chat_id_handler = CommandHandler('chatid', get_chatid, filters=~filters.UpdateType.EDITED)
     application.add_handler(chat_id_handler)
     
-    bday_handler = CommandHandler(['niver', 'n'], bday_info)
+    bday_handler = CommandHandler(['niver', 'n'], bday_info)                                                                                                                                                                                   
     application.add_handler(bday_handler)
     
     info_handler = CommandHandler(['help', 'h'], info_giver)
@@ -369,9 +395,7 @@ if __name__ == '__main__':
     
     dice_handler = CommandHandler(['dados', 'd'], dice_dicer)
     application.add_handler(dice_handler)
-
     
-
     if args.chat_id != 0:
         log_handler = MessageHandler(filters.Chat(chat_id=args.chat_id), log_message)
         application.add_handler(log_handler)
@@ -379,5 +403,13 @@ if __name__ == '__main__':
     job_queue = application.job_queue
     update_users_job = job_queue.run_repeating(update_usernames, interval=3600, first=5, chat_id=args.chat_id)
     test_privacy_job = job_queue.run_once(test_can_read_all_group_messages, 0)
+    
+    # workaround the run_daily bug (doens't work), use run_repeating instead)
+    now = datetime.now()
+    time_until_target_morn = (now.replace(hour=9, minute=0, second=0, microsecond=0) - now).total_seconds()
+    check_bdays_morn = job_queue.run_repeating(check_dates_and_notify, interval=86400, first=time_until_target_morn, chat_id=args.chat_id)
 
+    time_until_target_noon = (now.replace(hour=14, minute=0, second=0, microsecond=0) - now).total_seconds()
+    check_bdays_noon = job_queue.run_repeating(check_dates_and_notify, interval=86400, first=time_until_target_noon, chat_id=args.chat_id)
+    
     application.run_polling()
