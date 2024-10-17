@@ -21,6 +21,8 @@
 import string
 import secrets
 import re
+import datetime
+import random
 
 from sqlalchemy import Column, Integer, Text
 from sqlalchemy.ext.compiler import compiles
@@ -66,3 +68,34 @@ def pg_ts_stat(element, compiler, **kw):
 def random_quote(statement: str) -> str:
     quote_str = ''.join(secrets.choice(string.ascii_uppercase) for _ in range(8))  # Randomize dollar quotes
     return f"${quote_str}${statement}${quote_str}$"
+
+def is_valid_date(date_string, date_format="%d/%m/%Y"):
+    try:
+        datetime.datetime.strptime(date_string, date_format)
+        return True
+    except ValueError:
+        return False
+
+def roll_dice(dice):
+    match dice:
+        case 'd1':
+            res = random.randrange(1,2)
+        case 'd4':
+            res = random.randrange(1,5)
+        case 'd6':
+            res = random.randrange(1,7)
+        case 'd8':
+            res = random.randrange(1,9)
+        case 'd10':
+            res = random.randrange(1,11)
+        case 'd12':
+            res = random.randrange(1,13)
+        case 'd20':
+            res = random.randrange(1,21)
+        case 'd100':
+            res = random.randrange(1,101)
+        case 'd':
+            res = random.Random()
+        case _:
+            res = 0
+    return res

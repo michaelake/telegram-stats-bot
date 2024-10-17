@@ -25,8 +25,9 @@ import argparse
 import shlex
 import warnings
 import os
-
 import telegram
+import datetime
+import random
 from telegram.error import BadRequest
 from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackContext, JobQueue, ContextTypes, Application, \
     filters
@@ -36,6 +37,7 @@ import appdirs
 from .parse import parse_message
 from .log_storage import JSONStore, PostgresStore
 from .stats import StatsRunner, get_parser, HelpException
+from .utils import is_valid_date
 
 warnings.filterwarnings("ignore")
 
@@ -176,6 +178,131 @@ async def print_stats(update: Update, context: CallbackContext):
                                                    parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
 
 
+
+
+async def bday_info(update: Update, context: CallbackContext):
+    args = context.args
+    md_flag = True
+    
+    if len(args) >= 1:
+        opt = args[0]
+    else:
+        opt = 'agenda'
+
+    if len(args) == 3:
+        user = args[1]
+        date = args[2]
+        if not is_valid_date(date):
+            await update.message.reply_text(text='Acho que a data está errada :(')
+            return
+    elif len(args) == 2:
+        user = args[1]
+        date = None
+    else:
+        user = date = None
+    
+    # Caminho para o arquivo JSON
+    bday_json = os.path.join(other_path, 'bday.json')
+    
+    # Inicializa dicionário de aniversários
+    bday_dict = {} 
+    
+    # Ler o arquivo JSON existente
+    if os.path.exists(bday_json):
+        with open(bday_json, 'r') as file:
+            bday_dict.update(json.load(file))
+
+    # Adicionar novo aniversário
+    if opt == 'add' and user and date:
+        bday_dict[user] = date
+        text = f"Aniversário do usuário {user} atualizado para {date}."
+    
+    # Remover aniversário
+    elif opt == 'remove' and user:
+        if user in bday_dict:
+            del bday_dict[user]
+            text = f"Aniversário do usuário {user} removido."
+        else:
+            text = f"Usuário {user} não encontrado."
+    
+    # Listar todos os aniversários
+    elif opt == 'agenda':
+        text = "\n".join([f"{user}: {date}" for user, date in bday_dict.items()])
+        if not text:
+            text = "Ninguém me disse os aniversários."
+    elif opt == 'mes':
+        current_month = datetime.datetime.now().month
+        month_bday = {user: date for user, date in bday_dict.items() if datetime.datetime.strptime(date, '%d/%m/%Y').month == current_month}
+        if len(month_bday.items()) > 0:
+            text = "\n".join([f"{user}: {date}" for user, date in month_bday.items()])
+        else: text = 'Ninguém faz aniversário nesse mês!'
+    elif opt == 'dia':
+        current_day = datetime.datetime.now().day
+        day_bday = {user: date for user, date in bday_dict.items() if datetime.datetime.strptime(date, '%d/%m/%Y').day == current_day}
+        if len(day_bday.items()) > 0:
+            text = "Parabéns " + " e ".join([f"{user}" for user, date in day_bday.items()]) + "!\n\nhttps://www.youtube.com/watch?v=1Mcdh2Vf2Xk"
+            md_flag = False
+        else: 
+            text = 'Ninguém faz aniversário hoje!'
+    else:
+        text = "Comando ou argumentos inválidos."
+        
+    with open(bday_json, 'w') as file:
+        json.dump(bday_dict, file)
+
+    if md_flag:
+        await update.message.reply_text(text=f"```\n{text}\n```",
+                                        parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+    else:
+        await update.message.reply_text(text=f"\n{text}\n")
+
+async def dice_dicer(update: Update, context: CallbackContext):
+    args = context.args
+    
+    if len(args) > 1:
+        _max = 1
+    else:
+        if int(args[0]):
+            _max = int(args[0])
+            res = random.randint(1,_max+1)
+            text=f"\nJoguei um D{_max} e peguei {res}\n"
+        else:
+            text="Meus dados só tem números!"
+
+    await update.message.reply_text(text=text)
+
+
+async def info_giver(update: Update, context: CallbackContext):
+    text = '''
+    Aqui está tudo que eu sei fazer!
+    
+    /help, /h: mostra meus comandos,
+    /dados <número>, /d <número>: Gera um número aleatório de 1 a número (inclusivo),
+    /niver, /n: 
+        'agenda' - Lista todos os aniversários salvos,
+        'mes' - Lista todos os aniversariantes do mês,
+        'dia' - Lista de aniversariantes do dia,
+        'add' - Adiciona um novo aniversariante na agenda,
+        'remove' - Remove um aniversariante da agenda,
+            
+    /stats, /s: 
+        'counts' - "get_chat_counts",
+        'count-dist' - 'get_chat_ecdf',
+        'hours' - "get_counts_by_hour",
+        'days' - "get_counts_by_day",
+        'week' - "get_week_by_hourday",
+        'history' - "get_message_history",
+        'titles' - 'get_title_history',
+        'user' - 'get_user_summary',
+        'corr' - "get_user_correlation",
+        'delta' - "get_message_deltas",
+        'types' - "get_type_stats",
+        'words' - "get_word_stats",
+        'random' - "get_random_message"
+    '''
+    await update.message.reply_text(text=f"```\n{text}\n```",
+                                    parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+    
 async def send_help(text: str, context: CallbackContext, update: Update):
     """
     Send help text to user. Tries to send a direct message if possible.
@@ -208,6 +335,9 @@ if __name__ == '__main__':
 
     application = Application.builder().token(args.token).build()
 
+    other_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'other')
+    if not os.path.exists(other_path): os.mkdir(other_path)
+    
     if args.json_path:
         path = args.json_path
         if not os.path.split(path)[0]:  # Empty string for left part of path
@@ -225,11 +355,22 @@ if __name__ == '__main__':
     store = PostgresStore(args.postgres_url)
     stats = StatsRunner(store.engine, tz=args.tz)
 
-    stats_handler = CommandHandler('stats', print_stats)
+    stats_handler = CommandHandler(['stats', 's'], print_stats)
     application.add_handler(stats_handler)
 
     chat_id_handler = CommandHandler('chatid', get_chatid, filters=~filters.UpdateType.EDITED)
     application.add_handler(chat_id_handler)
+    
+    bday_handler = CommandHandler(['niver', 'n'], bday_info)
+    application.add_handler(bday_handler)
+    
+    info_handler = CommandHandler(['help', 'h'], info_giver)
+    application.add_handler(info_handler)
+    
+    dice_handler = CommandHandler(['dados', 'd'], dice_dicer)
+    application.add_handler(dice_handler)
+
+    
 
     if args.chat_id != 0:
         log_handler = MessageHandler(filters.Chat(chat_id=args.chat_id), log_message)
