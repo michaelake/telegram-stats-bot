@@ -75,27 +75,3 @@ def is_valid_date(date_string, date_format="%d/%m/%Y"):
         return True
     except ValueError:
         return False
-
-def roll_dice(dice):
-    match dice:
-        case 'd1':
-            res = random.randrange(1,2)
-        case 'd4':
-            res = random.randrange(1,5)
-        case 'd6':
-            res = random.randrange(1,7)
-        case 'd8':
-            res = random.randrange(1,9)
-        case 'd10':
-            res = random.randrange(1,11)
-        case 'd12':
-            res = random.randrange(1,13)
-        case 'd20':
-            res = random.randrange(1,21)
-        case 'd100':
-            res = random.randrange(1,101)
-        case 'd':
-            res = random.Random()
-        case _:
-            res = 0
-    return res
