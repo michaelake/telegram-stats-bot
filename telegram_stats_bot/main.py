@@ -33,7 +33,8 @@ from datetime import datetime, time
 from telegram.error import BadRequest
 from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackContext, JobQueue, ContextTypes, Application, \
     filters
-from telegram import Update
+from telegram import Update, MessageEntity
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .parse import parse_message
 from .log_storage import JSONStore, PostgresStore
@@ -346,6 +347,25 @@ async def check_dates_and_notify(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=context.job.chat_id,
                                                text=f"Hoje é o aniversário de {user}!")
 
+async def responses(update: Update, context: CallbackContext):
+    message = update.message
+    ff_text = 'Você já ouviu falar do aclamado MMORPG Final Fantasy XIV? Com uma versão gratuita expandida, você pode jogar todo o conteúdo de A Realm Reborn e a premiada expansão Stormblood até o nível 70 gratuitamente, sem restrições de tempo de jogo.'
+    if message and message.entities:
+        bot_username = context.bot.username
+        for entity in message.entities:
+            if entity.type == MessageEntity.MENTION:
+                mentioned_username = message.text[entity.offset:entity.offset + entity.length]
+                if mentioned_username == f"@{bot_username}":
+                    if any(kw in message.text for kw in ["ffxiv", 'ff14']):
+                        await message.reply_text(ff_text)
+                    elif 'raqueta' in message.text:
+                        raq_path = os.path.join(other_path, 'raqueta.txt')
+                        with open(raq_path, 'r') as file:
+                            raqueta = file.readlines()
+                        await message.reply_text(text=f"```{raqueta}```",parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+                        
+
+    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('token', type=str, help="Telegram bot token")
@@ -360,7 +380,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     application = Application.builder().token(args.token).build()
-
+    
     other_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'other')
     if not os.path.exists(other_path): os.mkdir(other_path)
     
@@ -395,7 +415,10 @@ if __name__ == '__main__':
     
     dice_handler = CommandHandler(['dados', 'd'], dice_dicer)
     application.add_handler(dice_handler)
-    
+
+    res_handler = MessageHandler(filters.Entity(MessageEntity.MENTION), responses)
+    application.add_handler(res_handler)
+
     if args.chat_id != 0:
         log_handler = MessageHandler(filters.Chat(chat_id=args.chat_id), log_message)
         application.add_handler(log_handler)
