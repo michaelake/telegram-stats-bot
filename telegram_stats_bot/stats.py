@@ -213,7 +213,7 @@ class StatsRunner(object):
 
         out_text = df.iloc[:n].to_string(index=False, header=True, float_format=lambda x: f"{x:.1f}")
 
-        return f"```\n{out_text}\n```", None
+        return f"```\n{out_text}\n```", None, None
 
     def get_chat_ecdf(self, lquery: str = None, mtype: str = None, start: str = None, end: str = None,
                       log: bool = False) -> Tuple[Union[str, None], Union[None, BytesIO]]:
@@ -279,7 +279,7 @@ class StatsRunner(object):
 
         bio = output_fig(fig)
 
-        return None, bio
+        return None, None, bio
 
     def get_counts_by_hour(self, user: Tuple[int, str] = None, lquery: str = None, start: str = None, end: str = None) \
             -> Tuple[Union[str, None], Union[None, BytesIO]]:
@@ -368,7 +368,7 @@ class StatsRunner(object):
 
         bio = output_fig(fig)
 
-        return None, bio
+        return None, None, bio
 
     def get_counts_by_day(self, user: Tuple[int, str] = None, lquery: str = None, start: str = None, end: str = None,
                           plot: str = None) -> Tuple[Union[str, None], Union[None, BytesIO]]:
@@ -450,7 +450,7 @@ class StatsRunner(object):
 
         bio = output_fig(fig)
 
-        return None, bio
+        return None, None, bio
 
     def get_week_by_hourday(self, lquery: str = None, user: Tuple[int, str] = None, start: str = None, end: str = None) \
             -> Tuple[Union[str, None], Union[None, BytesIO]]:
@@ -494,7 +494,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return "No matching messages", None
+            return "Sem mensagens.", None
 
         df['msg_time'] = pd.to_datetime(df.msg_time)
         df['msg_time'] = df.msg_time.dt.tz_convert(self.tz)
@@ -508,25 +508,34 @@ class StatsRunner(object):
         df_grouped = df_grouped.reindex(columns=['Monday', 'Tuesday', 'Wednesday', 'Thursday',
                                                  'Friday', 'Saturday', 'Sunday'])
 
+        row_sums = df_grouped.sum(axis=1)
+        df_percent = df_grouped.div(row_sums, axis=0) * 100
+
         fig = Figure(constrained_layout=True)
         ax = fig.subplots()
 
-        sns.heatmap(df_grouped.T, yticklabels=['M', 'T', 'W', 'Th', 'F', 'Sa', 'Su'], linewidths=.5,
-                    square=True, fmt='d', vmin=0,
-                    cbar_kws={"orientation": "horizontal"}, cmap="viridis", ax=ax)
+        sns.heatmap(df_percent, yticklabels=df_grouped.index, xticklabels=['S', 'T', 'Q', 'Q', 'S', 'S', 'D'], linewidths=1,
+                    square=True, fmt='.1f', vmin=0,
+                    cbar_kws={"orientation": "vertical"}, cmap="BuPu", ax=ax)
         ax.tick_params(axis='y', rotation=0)
-        ax.set_ylabel("")
-        ax.set_xlabel("")
+        ax.set(xlabel="", ylabel="")
+        ax.xaxis.tick_top()
+        
+        lgd = None
+        
         if lquery:
-            ax.set_title(f"Messages by day and hour for {lquery}")
+            ax.set_title(f"Porcentagem de mensagens por dia por hora para {lquery}")
+            lgd = 'Nesse gráfico temos a relação das mensagens por hora por dia no período\! Quanto mais escuro for o quadrado, mais foi falado naquele dia da semana em relação a hora\.'
         elif user:
-            ax.set_title(f"Total messages by day and hour for {user[1]}")
+            ax.set_title(f"Porcentagem de mensagens por dia por hora para {user[1]}")
+            lgd = f'Nesse gráfico temos a relação das mensagens por hora por dia pelo {user[1]}\! Quanto mais escuro for o quadrado, mais ele falou naquele dia da semana em relação a hora\.'
         else:
-            ax.set_title("Total messages by day and hour")
-
+            ax.set_title("Porcentagem de mensagens por dia por hora")
+            lgd = 'Nesse gráfico temos a relação das mensagens por hora por dia desde que comecei a contar\!Quanto mais escuro for o quadrado, mais foi falado naquele dia da semana em relação a hora\.'
+            
         bio = output_fig(fig)
-
-        return None, bio
+        
+        return lgd, None, bio
 
     def get_message_history(self, user: Tuple[int, str] = None, lquery: str = None, averages: int = None,
                             start: str = None,
@@ -544,7 +553,7 @@ class StatsRunner(object):
 
         if averages:
             if averages < 0:
-                raise HelpException("averages must be >= 0")
+                raise HelpException("médias precisam ser>= 0")
 
         if lquery:
             query_conditions.append(f"text_index_col @@ to_tsquery( {random_quote(lquery)} )")
@@ -578,7 +587,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return "No matching messages", None
+            return "Sem mensagens correspondentes", None
 
         df['day'] = pd.to_datetime(df.day)
         df['day'] = df.day.dt.tz_convert(self.tz)
@@ -597,23 +606,23 @@ class StatsRunner(object):
 
         fig = Figure(constrained_layout=True)
         subplot = fig.subplots()
-        df.plot(y='messages', alpha=alpha, legend=False, ax=subplot)
+        df.plot(y='messages', alpha=alpha, legend=False, ax=subplot, color=sns.color_palette()[2])
         if averages:
             df.plot(y='msg_rolling', legend=False, ax=subplot)
-        subplot.set_ylabel("Messages")
-        subplot.set_xlabel("Date")
+        subplot.set_ylabel("Mensagens")
+        subplot.set_xlabel("Data")
         if lquery:
-            subplot.set_title(f"History for query: {lquery}")
+            subplot.set_title(f"Histórico da busca: {lquery}")
         elif user:
-            subplot.set_title(f"Message History for {user[1]}")
+            subplot.set_title(f"Histórico de mensagens do {user[1]}")
         else:
-            subplot.set_title("Message History")
+            subplot.set_title("Histórico de mensagens")
         sns.despine(fig=fig)
         fig.tight_layout()
 
         bio = output_fig(fig)
 
-        return None, bio
+        return None, None, bio
 
     def get_title_history(self, start: str = None, end: str = None, duration: bool = False) \
             -> Tuple[Union[str, None], Union[None, BytesIO]]:
@@ -623,6 +632,7 @@ class StatsRunner(object):
         :param end: End timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         :param duration: If true, order by duration instead of time.
         """
+        
         query_conditions = []
         sql_dict = {}
 
@@ -668,50 +678,57 @@ class StatsRunner(object):
         fig = Figure(constrained_layout=True, figsize=(12, 1+0.15 * len(df)))
         ax = fig.subplots()
 
+        lgd = None
+        
         if duration:
             df = df.sort_values('diff')
             df = df.reset_index(drop=True)
             df['idx'] = df.index
 
-            ax.barh(df.idx, df['diff'].dt.days + df['diff'].dt.seconds / 86400, tick_label=df.new_chat_title)
+            ax.barh(df.idx, df['diff'].dt.days + df['diff'].dt.seconds / 86400, tick_label=df.new_chat_title, color=sns.color_palette()[2])
 
             ax.margins(0.2)
             ax.set_ylabel("")
-            ax.set_xlabel("Duration (days)")
+            ax.set_xlabel("Duração (dias)")
             ax.set_ylim(-1, (df.idx.max() + 1))
-            ax.set_title("Chat Title History")
-            ax.grid(False, which='both', axis='y')
+            ax.set_title("Histórico de Nomes do Grupo")
+            ax.grid(False, which='both', axis='x')
             sns.despine(fig=fig, left=True)
+            
+            lgd = "Nesse gráfico podemos ver quanto tempo os nomes do grupo ficaram ativos!"
 
         else:
             x = df.iloc[:-1].end
             y = df.iloc[:-1].idx + .5
 
-            ax.scatter(x, y, zorder=4, color=sns.color_palette()[1])
-
+            ax.scatter(x, y, zorder=4, color=sns.color_palette()[2])
             titles = list(zip(df.date.apply(date2num),
                               df.end.apply(date2num) - df.date.apply(date2num)))
 
+            point_dict = {}
             for n, i in enumerate(titles):
                 ax.broken_barh([i], (n, 1))
-                ax.annotate(df.new_chat_title[n], xy=(i[0] + i[1], n), xycoords='data',
-                            xytext=(10, 0), textcoords='offset points',
-                            horizontalalignment='left', verticalalignment='bottom')
-
+                ax.annotate(n, xy=(i[0] + i[1], n), xycoords='data',
+                            xytext=(12, 5), textcoords='offset points',
+                            horizontalalignment='left', verticalalignment='center', rotation=0)
+                point_dict[n] = df.new_chat_title[n]
+            
+            lgd_list = [f'{n}: {title}' for n, title in point_dict.items()]
+            lgd = "Com esse gráfico podemos ver quando o grupo mudou de nome!\n\nAbaixo podemos ver os 10 últimos nomes:\n\n" + "\n".join(lgd_list[-10:])
             ax.set_ylim(-1, (df.idx.max() + 1))
             ax.set_xlim(titles[0][0] - 1, None)
 
             ax.margins(0.2)
             ax.set_ylabel("")
             ax.set_xlabel("")
-            ax.set_title("Chat Title History")
+            ax.set_title("Histórico de Nomes do Grupo")
             ax.grid(False, which='both', axis='y')
             ax.tick_params(axis='y', which='both', labelleft=False, left=False)
             sns.despine(fig=fig, left=True)
 
         bio = output_fig(fig)
 
-        return None, bio
+        return lgd, False, bio
 
     def get_user_summary(self, autouser=None, **kwargs) -> Tuple[Union[str, None], Union[None, BytesIO]]:
         """
@@ -744,6 +761,17 @@ class StatsRunner(object):
                              FROM "user_names"
                              WHERE user_id = :user;
                          """
+                         
+        type_query = """
+                     SELECT type, count(*) as count
+                     FROM messages_utc
+                     WHERE type NOT IN ('new_chat_members', 'left_chat_member', 'new_chat_photo',
+                                       'new_chat_title', 'migrate_from_group', 'pinned_message')
+                                       AND from_user = :user
+                     GROUP BY type
+                     ORDER BY count DESC;
+                     """
+        
 
         with self.engine.connect() as con:
             result = con.execute(text(count_query), sql_dict)
@@ -754,7 +782,12 @@ class StatsRunner(object):
             events: list = result.fetchall()
             result = con.execute(text(username_query), sql_dict)
             name_count: int = result.fetchall()[0][0]
-
+            
+            df_u = pd.read_sql_query(text(type_query), con, params=sql_dict)
+            df_u['User Percent'] = df_u['count'] / df_u['count'].sum() * 100
+            df_u.columns = ['type', 'Count', 'Percent']
+            
+ 
         event_text = '\n'.join([f'{event.event} on {pd.to_datetime(event.date).tz_convert(self.tz)}'
                                 for event in events])
 
@@ -762,17 +795,26 @@ class StatsRunner(object):
         if event_text:
             event_text = '\n' + event_text
 
+        text_count = df_u.loc[df_u['type'] == 'text', 'Count'].iloc[0]
+        sticker_count = df_u.loc[df_u['type'] == 'sticker', 'Count'].iloc[0]
+        photo_count = df_u.loc[df_u['type'] == 'photo', 'Count'].iloc[0]
+        gif_count = df_u.loc[df_u['type'] == 'animation', 'Count'].iloc[0]
+        
         try:
-            out_text = f"Messages sent: {msg_count}\n" \
-                       f"Average messages per day: {msg_count / days:.2f}\n" \
-                       f"First message was {days:.2f} days ago.\n" \
-                       f"Usernames on record: {name_count}\n" \
-                       f"Average username lifetime: {days / name_count:.2f} days\n" + event_text
+            out_text = f"Mensagens enviadas: {msg_count}\n" \
+                       f"Média de mensagens por dia: {msg_count / days:.2f}\n" \
+                       f"Primeira mensagem foi a {days:.2f} atrás\n" \
+                       f"Usernames registrados: {name_count}\n" \
+                       f"Média do tempo de uso por username: {days / name_count:.2f} dias\n" \
+                       f"Número de textos enviados: {text_count}\n" \
+                       f"Número de stickers enviados: {sticker_count}\n" \
+                       f"Número de fotos enviadas: {photo_count}\n" \
+                       f"Número de gifs enviados: {gif_count}\n" + event_text
         except TypeError:
-            return 'No data for user', None
+            return 'No data for user', None, None
 
 
-        return f"User {user[1].lstrip('@')}: ```\n{out_text}\n```", None
+        return f"Dados do usuário {user[1].lstrip('@')}: ```\n{out_text}\n```", None, None
 
     def get_user_correlation(self, start: str = None, end: str = None, agg: bool = True, c_type: str = None,
                              n: int = 5, thresh: float = 0.05, autouser=None, **kwargs) -> Tuple[str, None]:
@@ -802,15 +844,15 @@ class StatsRunner(object):
             query_where = f"WHERE {' AND '.join(query_conditions)}"
 
         if n <= 0:
-            raise HelpException(f'n must be greater than 0, got: {n}')
+            raise HelpException(f'n must be greater than 0, got: {n}.')
 
         if not c_type:
             c_type = 'pearson'
         elif c_type not in ['pearson', 'spearman']:
-            raise HelpException("corr must be either pearson or spearman")
+            raise HelpException("correlação precisa ser 'pearson' ou 'spearman'.")
 
         if not 0 <= thresh <= 1:
-            raise HelpException(f'n must be in the range [0, 1], got: {n}')
+            raise HelpException(f'n precisa estar entre [0, 1], solicitado: {n}')
 
         query = f"""
                 SELECT msg_time, extract(ISODOW FROM msg_time) as dow, extract(HOUR FROM msg_time) as hour,
@@ -831,7 +873,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return 'No messages in range', None
+            return 'Sem mensagens na pesquisa.', None
 
         df['msg_time'] = pd.to_datetime(df.msg_time)
         df['msg_time'] = df.msg_time.dt.tz_convert(self.tz)
@@ -845,7 +887,7 @@ class StatsRunner(object):
         user_dict = {'user': {user_id: value[0] for user_id, value in self.users.items()}}
         df = df.loc[df.user.isin(list(user_dict['user'].keys()))]  # Filter out users with no names
         df = df.replace(user_dict)  # Replace user ids with names
-#        df['user'] = df['user'].str.replace(r'[^\x00-\x7F]', "", regex=True)
+        #df['user'] = df['user'].str.replace(r'[^\x00-\x7F]', "", regex=True)
 
         if agg:
             df = df.pivot_table(index=['dow', 'hour'], columns='user', values='messages', aggfunc='sum')
@@ -870,16 +912,16 @@ class StatsRunner(object):
             me = df_corr[user[1]].sort_values(ascending=False).iloc[1:].dropna()
 
         if len(me) < 1:
-            return "`Sorry, not enough data, try with -aggtimes, decrease -thresh, or use a bigger date range.`", None
+            return "`Desculpa, poucos dados, tente com -aggtimes, diminuir -thresh, ou usando um período de tempo maior.`", None
 
         if n > len(me) // 2:
             n = int(len(me) // 2)
 
         out_text = me.to_string(header=False, float_format=lambda x: f"{x:.3f}")
         split = out_text.splitlines()
-        out_text = "\n".join(['HIGHEST CORRELATION:'] + split[:n] + ['\nLOWEST CORRELATION:'] + split[-n:])
+        out_text = "\n".join(['Maior correlação:'] + split[:n] + ['\nMenor correlação:'] + split[-n:])
 
-        return f"**User Correlations for {escape_markdown(user[1])}**\n```\n{out_text}\n```", None
+        return f"Correlação do {escape_markdown(user[1])} com outros usuários:\n```\n{out_text}\n```", None, None
 
     def get_message_deltas(self, lquery: str = None, start: str = None, end: str = None, n: int = 10, thresh: int = 500,
                            autouser=None, **kwargs) -> Tuple[Union[str, None], Union[None, BytesIO]]:
@@ -956,11 +998,11 @@ class StatsRunner(object):
         me = me.apply(lambda x: x.round('1s'))
 
         if len(me) < 1:
-            return "\n```\nSorry, not enough data, try a bigger date range or decrease -thresh.\n```", None
+            return "\n```\nDesculpa, poucos dados, tente com -aggtimes, diminuir -thresh, ou usando um período de tempo maior.\n```", None, None
 
         out_text = me.iloc[:n].to_string(header=False, index=True)
 
-        return f"**Median message delays for {escape_markdown(user[1])} and:**\n```\n{out_text}\n```", None
+        return f"**Tempo médio entre as mensagens de {escape_markdown(user[1])} e:**\n```\n{out_text}\n```", None, None
 
     def get_type_stats(self, start: str = None, end: str = None, autouser=None, **kwargs) -> Tuple[str, None]:
         """
@@ -998,7 +1040,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return 'No messages in range', None
+            return 'Sem mensagens no período', None
 
         df['Group Percent'] = df['count'] / df['count'].sum() * 100
         df.columns = ['type', 'Group Count', 'Group Percent']
@@ -1035,9 +1077,9 @@ class StatsRunner(object):
         out_text = df.to_string(index=False, header=True, float_format=lambda x: f"{x:.1f}")
 
         if user:
-            return f"**Messages by type, {escape_markdown(user[1])} vs group:**\n```\n{out_text}\n```", None
+            return f"**Mensagens por tipo \- {escape_markdown(user[1])} vs grupo:**\n```\n{out_text}\n```", None, None
         else:
-            return f"**Messages by type:**\n```\n{out_text}\n```", None
+            return f"**Mensagens por tipo:**\n```\n{out_text}\n```", None, None
 
     def get_word_stats(self, n: int = 4, limit: int = 20, start: str = None, end: str = None,
                        user: Tuple[int, str] = None, **kwargs) -> Tuple[str, None]:
@@ -1085,9 +1127,9 @@ class StatsRunner(object):
         out_text = df.to_string(index=False, header=True, float_format=lambda x: f"{x:.1f}")
 
         if user:
-            return f"**Most frequently used lexemes, {escape_markdown(user[1].lstrip('@'))}\n```\n{out_text}\n```", None
+            return f"**Most frequently used lexemes, {escape_markdown(user[1].lstrip('@'))}\n```\n{out_text}\n```", None, None
         else:
-            return f"**Most frequently used lexemes, all users:**\n```\n{out_text}\n```", None
+            return f"**Most frequently used lexemes, all users:**\n```\n{out_text}\n```", None, None
 
     def get_random_message(self, lquery: str = None, start: str = None, end: str = None,
                            user: Tuple[int, str] = None, **kwargs) -> Tuple[str, None]:
@@ -1133,13 +1175,13 @@ class StatsRunner(object):
         try:
             date, from_user, out_text = result.fetchall()[0]
         except IndexError:
-            return "No matching messages", None
+            return "Nenhuma mensagem correspondente", None
 
-        return f"*On {escape_markdown(date.strftime('%Y-%m-%d'))}, " \
+        return f"*No dia {escape_markdown(date.strftime('%d/%m/%Y'))}, " \
                f"{escape_markdown(self.users[from_user][0]).lstrip('@')}" \
-               f" gave these words of wisdom:*\n" \
+               f" nos iluminou com isso:*\n" \
                f"{escape_markdown(out_text)}\n", \
-            None
+            None, None
 
 
 def get_parser(runner: StatsRunner) -> InternalParser:

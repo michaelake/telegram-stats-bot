@@ -165,19 +165,21 @@ async def print_stats(update: Update, context: CallbackContext):
             pass
 
         try:
-            text, image = func(**args)
+            text, md, image = func(**args)
         except HelpException as e:
             text = e.msg
             await send_help(text, context, update)
             return
 
-    if text:
-        await update.effective_message.reply_text(text=text,
-                                                  parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
-
     if image:
         await update.effective_message.reply_photo(caption='`' + " ".join(context.args) + '`', photo=image,
                                                    parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+        
+    if text:
+        if md == False:
+            await update.effective_message.reply_text(text=text)
+        else:
+            await update.effective_message.reply_text(text=text, parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
 
 
 
@@ -203,23 +205,18 @@ async def bday_info(update: Update, context: CallbackContext):
     else:
         user = date = None
     
-    # Caminho para o arquivo JSON
     bday_json = os.path.join(other_path, 'bday.json')
     
-    # Inicializa dicionário de aniversários
     bday_dict = {} 
     
-    # Ler o arquivo JSON existente
     if os.path.exists(bday_json):
         with open(bday_json, 'r') as file:
             bday_dict.update(json.load(file))
-
-    # Adicionar novo aniversário
+            
     if opt == 'add' and user and date:
         bday_dict[user] = date
         text = f"Aniversário do usuário {user} atualizado para {date}."
     
-    # Remover aniversário
     elif opt == 'remove' and user:
         if user in bday_dict:
             del bday_dict[user]
@@ -227,7 +224,6 @@ async def bday_info(update: Update, context: CallbackContext):
         else:
             text = f"Usuário {user} não encontrado."
     
-    # Listar todos os aniversários
     elif opt == 'agenda':
         text = "\n".join([f"{user}: {date}" for user, date in bday_dict.items()])
         if not text:
@@ -274,33 +270,50 @@ async def dice_dicer(update: Update, context: CallbackContext):
     await update.message.reply_text(text=text)
 
 
-async def info_giver(update: Update):
+async def info_giver(update: Update, context: CallbackContext):
     text = '''
     Aqui está tudo que eu sei fazer!
     
     /help, /h: mostra meus comandos,
-    /dados <número>, /d <número>: Gera um número aleatório de 1 a número (inclusivo),
-    /niver, /n: 
+    /dados <número>, /d <número>: Gera um número aleatório de 1 a <número> (inclusivo),
+    /niver, /n <param>: 
         'agenda' - Lista todos os aniversários salvos,
         'mes' - Lista todos os aniversariantes do mês,
         'dia' - Lista de aniversariantes do dia,
         'add' - Adiciona um novo aniversariante na agenda,
         'remove' - Remove um aniversariante da agenda,
+    
+    
+    /stats, /s (/bstats, /bs se betamiko) <param> : 
+        obs: todos aceitam os params extras:
+            -start <data> - Data de início (pode ser ano, ano-mês, ano-mês-dia, ano-mês-dia hora)
+            -end <data> - Data de fim (pode ser ano, ano-mês, ano-mês-dia, ano-mês-dia hora)
+            -me
             
-    /stats, /s (bstats, bs no contexto betamiko): 
         'counts' - "get_chat_counts",
         'count-dist' - 'get_chat_ecdf',
         'hours' - "get_counts_by_hour",
         'days' - "get_counts_by_day",
-        'week' - "get_week_by_hourday",
-        'history' - "get_message_history",
-        'titles' - 'get_title_history',
+        'week' - Relação de mensagens por hora por semana.
+            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
+        'history' - Retorna a quantidade mensagens por dia ao longo do tempo.
+            Param extra:    -averages <tempo em dias>
+                            
+        'titles' - Histórico de títulos do grupo por data.
+            Param extra:    -duration (título por tempo como título ativo.)
         'user' - 'get_user_summary',
-        'corr' - "get_user_correlation",
-        'delta' - "get_message_deltas",
-        'types' - "get_type_stats",
-        'words' - "get_word_stats",
-        'random' - "get_random_message"
+        'corr' - Retorna a correlação entre você e outros usuários.
+            Param extra:    -agg (Correlaciona pelas horas da semana)
+                            -c_type (Escolhe entre "pearson" ou "spearman")
+                            -n (Número de correlações a serem mostradas (min e max))
+                            -thresh (Determinação dos valores de "bins" a serem usados (0-1))
+        'delta' - Retorna o tempo médio entre as mensagens do usuário em relação aos outros.
+            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
+        'types' - Retorna a contagem de mensagens do usuário por tipo e compara com o grupo.
+        'words' - Retorna a contagem de lexemas no grupo.
+            Param extra:    -n (Apenas lexemas de tamanho n serão considerados)
+                            -limit (Número de lexemas a serem retornados)
+        'random' - Retorna uma mensagem aleatória.
     '''
     await update.message.reply_text(text=f"```\n{text}\n```",
                                     parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
@@ -321,16 +334,6 @@ async def send_help(text: str, context: CallbackContext, update: Update):
         await update.message.reply_text(text=f"```\n{text}\n```",
                                         parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
 
-'''async def check_dates_helper(update: Update, context: CallbackContext):
-    chat_id = update.effective_chat.id
-    await update.message.reply_text('help')
-    
-    context.job_queue.run_daily(
-        check_dates_and_notify,
-        time=time(hour=12, minute=20),
-        chat_id=chat_id
-    )'''
-    
 async def check_dates_and_notify(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Checking birthdays")
     bday_dict = {}
