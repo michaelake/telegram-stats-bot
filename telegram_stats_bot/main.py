@@ -271,50 +271,13 @@ async def dice_dicer(update: Update, context: CallbackContext):
 
 
 async def info_giver(update: Update, context: CallbackContext):
-    text = '''
-    Aqui está tudo que eu sei fazer!
-    
-    /help, /h: mostra meus comandos,
-    /dados <número>, /d <número>: Gera um número aleatório de 1 a <número> (inclusivo),
-    /niver, /n <param>: 
-        'agenda' - Lista todos os aniversários salvos,
-        'mes' - Lista todos os aniversariantes do mês,
-        'dia' - Lista de aniversariantes do dia,
-        'add' - Adiciona um novo aniversariante na agenda,
-        'remove' - Remove um aniversariante da agenda,
-    
-    
-    /stats, /s (/bstats, /bs se betamiko) <param> : 
-        obs: todos aceitam os params extras:
-            -start <data> - Data de início (pode ser ano, ano-mês, ano-mês-dia, ano-mês-dia hora)
-            -end <data> - Data de fim (pode ser ano, ano-mês, ano-mês-dia, ano-mês-dia hora)
-            -me
-            
-        'counts' - "get_chat_counts",
-        'count-dist' - 'get_chat_ecdf',
-        'hours' - "get_counts_by_hour",
-        'days' - "get_counts_by_day",
-        'week' - Relação de mensagens por hora por semana.
-            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
-        'history' - Retorna a quantidade mensagens por dia ao longo do tempo.
-            Param extra:    -averages <tempo em dias>
-                            
-        'titles' - Histórico de títulos do grupo por data.
-            Param extra:    -duration (título por tempo como título ativo.)
-        'user' - 'get_user_summary',
-        'corr' - Retorna a correlação entre você e outros usuários.
-            Param extra:    -agg (Correlaciona pelas horas da semana)
-                            -c_type (Escolhe entre "pearson" ou "spearman")
-                            -n (Número de correlações a serem mostradas (min e max))
-                            -thresh (Determinação dos valores de "bins" a serem usados (0-1))
-        'delta' - Retorna o tempo médio entre as mensagens do usuário em relação aos outros.
-            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
-        'types' - Retorna a contagem de mensagens do usuário por tipo e compara com o grupo.
-        'words' - Retorna a contagem de lexemas no grupo.
-            Param extra:    -n (Apenas lexemas de tamanho n serão considerados)
-                            -limit (Número de lexemas a serem retornados)
-        'random' - Retorna uma mensagem aleatória.
-    '''
+    info_path = os.path.join(other_path, 'infos.txt')
+    print(info_path)
+    try:
+        with open(info_path, 'r') as infos:
+            text = infos.read()
+    except FileNotFoundError:
+        text = "q"
     await update.message.reply_text(text=f"```\n{text}\n```",
                                     parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
     

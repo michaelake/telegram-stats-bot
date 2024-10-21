@@ -1,0 +1,51 @@
+Aqui está tudo que eu sei fazer!
+    
+    /help, /h: mostra meus comandos,
+    /dados <número>, /d <número>: Gera um número aleatório de 1 a <número> (inclusivo),
+    /niver, /n <param>: 
+        'agenda' - Lista todos os aniversários salvos,
+        'mes' - Lista todos os aniversariantes do mês,
+        'dia' - Lista de aniversariantes do dia,
+        'add' - Adiciona um novo aniversariante na agenda,
+        'remove' - Remove um aniversariante da agenda,
+    
+    
+    /stats, /s (/bstats, /bs se betamiko) <param> : 
+        obs: todos aceitam os params extras:
+            -start <data> - Data de início (pode ser ano, ano-mês, ano-mês-dia, ano-mês-dia hora)
+            -end <data> - Data de fim (pode ser ano, ano-mês, ano-mês-dia, ano-mês-dia hora)
+            -me
+            
+        'counts' - Retorna a contagem de mensagens do grupo.
+            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
+                            -mtype <tipo> (Limita a busca para 'text', 'photo', sticker', etc')
+                            -n <número> (Limita o número de usuários na contagem)
+        'ecdf' - Retorna a distribuição acumulada de mensagens por usuários.
+            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
+                            -mtype <tipo> (Limita a busca para 'text', 'photo', sticker', etc')
+                            -log (Gera o gráfico usando log)
+        'hours' - Retorna o gráfico de mensagens por hora.
+            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
+        'days' - Retorna gráfico das mensagens por dia.
+            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
+                            -plot <box ou violin>
+        'week' - Relação de mensagens por hora por semana.
+            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
+        'history' - Retorna a quantidade mensagens por dia ao longo do tempo.
+            Param extra:    -averages <tempo em dias>
+                            
+        'titles' - Histórico de títulos do grupo por data.
+            Param extra:    -duration (título por tempo como título ativo.)
+        'user' - Retorna informações sobre o usuário.
+        'corr' - Retorna a correlação entre você e outros usuários.
+            Param extra:    -agg (Correlaciona pelas horas da semana)
+                            -c_type (Escolhe entre "pearson" ou "spearman")
+                            -n (Número de correlações a serem mostradas (min e max))
+                            -thresh (Determinação dos valores de "bins" a serem usados (0-1))
+        'delta' - Retorna o tempo médio entre as mensagens do usuário em relação aos outros.
+            Param extra:    -lquery (Limita resultados usando os operadores (&, |, !, <n>))
+        'types' - Retorna a contagem de mensagens do usuário por tipo e compara com o grupo.
+        'words' - Retorna a contagem de lexemas no grupo.
+            Param extra:    -n (Apenas lexemas de tamanho n serão considerados)
+                            -limit (Número de lexemas a serem retornados)
+        'random' - Retorna uma mensagem aleatória.

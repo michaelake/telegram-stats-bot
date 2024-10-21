@@ -81,7 +81,7 @@ class InternalParser(argparse.ArgumentParser):
 
 class StatsRunner(object):
     allowed_methods = {'counts': "get_chat_counts",
-                       'count-dist': 'get_chat_ecdf',
+                       'ecdf': 'get_chat_ecdf',
                        'hours': "get_counts_by_hour",
                        'days': "get_counts_by_day",
                        'week': "get_week_by_hourday",
@@ -196,7 +196,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict, index_col='from_user')
 
         if len(df) == 0:
-            return "No matching messages", None
+            return "Sem mensagens correspondente", None
 
         user_df = pd.Series(self.users, name="user")
         user_df = user_df.apply(lambda x: x[0])  # Take only @usernames
@@ -234,7 +234,7 @@ class StatsRunner(object):
         if mtype:
             if mtype not in ('text', 'sticker', 'photo', 'animation', 'video', 'voice', 'location', 'video_note',
                              'audio', 'document', 'poll'):
-                raise HelpException(f'mtype {mtype} is invalid.')
+                raise HelpException(f'mtype {mtype} não é válido.')
             query_conditions.append(f"""type = '{mtype}'""")
 
         if start:
@@ -259,7 +259,12 @@ class StatsRunner(object):
 
         with self.engine.connect() as con:
             df = pd.read_sql_query(text(query), con, params=sql_dict)
-
+        
+        user_df = pd.Series(self.users, index=self.users.keys())
+        user_df = pd.Series(self.users, name="user")
+        user_df = user_df.apply(lambda x: x[0])  # Take only @usernames
+        df = df.join(user_df, on='from_user')
+        
         if len(df) == 0:
             return "No matching messages", None
 
@@ -267,19 +272,22 @@ class StatsRunner(object):
         subplot = fig.subplots()
 
         sns.ecdfplot(df, y='count', stat='count', log_scale=log, ax=subplot)
-        subplot.set_xlabel('User')
-        subplot.set_ylabel('Messages')
+        subplot.set_xlabel('Usuários')
+        subplot.set_ylabel('Mensagens')
 
         if lquery:
-            subplot.set_title(f"Messages by User for {lquery}")
+            subplot.set_title(f"Mensagens por Usuário por {lquery}")
         else:
-            subplot.set_title("Messages by User")
+            subplot.set_title("Mensagens por Usuário")
 
         sns.despine(fig=fig)
 
         bio = output_fig(fig)
 
-        return None, None, bio
+        user_list = ', '.join([escape_markdown(df.at[i, 'user']) for i in range(0,5)]).replace("@","")
+        lgd = "Nesse gráfico podemos ver a distribuição acumulada de mensagens por usuários, ou seja, quantos usuários contribuíram para dada quantidade de mensagens\.\n\n" \
+              f"Os cinco que mais contribuíram para o total de mensagens foram: {user_list}\."
+        return lgd, None, bio
 
     def get_counts_by_hour(self, user: Tuple[int, str] = None, lquery: str = None, start: str = None, end: str = None) \
             -> Tuple[Union[str, None], Union[None, BytesIO]]:
@@ -323,7 +331,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return "No matching messages", None
+            return "Sem mensagem correspondente", None
 
         df['day'] = pd.to_datetime(df.day)
         df['day'] = df.day.dt.tz_convert(self.tz)
@@ -355,19 +363,20 @@ class StatsRunner(object):
         subplot.set_xlim(-1, 24)  # Set explicitly to plot properly even with missing data
 
         if lquery:
-            subplot.set_title(f"Messages by Hour for {lquery}")
+            subplot.set_title(f"Mensagens por Hora para {lquery}")
         elif user:
-            subplot.set_title(f"Messages by Hour for {user[1]}")
+            subplot.set_title(f"Mensagens por Hora para {user[1]}")
         if user:
-            subplot.set_ylabel('Messages per Week')
+            subplot.set_ylabel('Mensagens por Semana')
         else:
-            subplot.set_ylabel('Messages per Day')
-            subplot.set_title("Messages by Hour")
+            subplot.set_ylabel('Mensagens por Dia')
+            subplot.set_title("Mensagens por Hora")
 
         sns.despine(fig=fig)
 
         bio = output_fig(fig)
-
+        
+        lgd = 'Esse gráfico mostra a quantidade de mensagens por hora!'
         return None, None, bio
 
     def get_counts_by_day(self, user: Tuple[int, str] = None, lquery: str = None, start: str = None, end: str = None,
@@ -414,7 +423,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return "No matching messages", None
+            return "Sem mensagem correspondente", None
 
         df['day'] = pd.to_datetime(df.day)
         df['day'] = df.day.dt.tz_convert(self.tz)
@@ -429,28 +438,30 @@ class StatsRunner(object):
         fig = Figure(constrained_layout=True)
         subplot = fig.subplots()
         if plot == 'box':
-            sns.boxplot(x='day_name', y='messages', data=df, whis=1, showfliers=False, ax=subplot)
+            sns.boxplot(x='day_name', y='messages', data=df, whis=1, showfliers=False, ax=subplot, color=sns.color_palette()[2])
         elif plot == 'violin' or plot is None:
-            sns.violinplot(x='day_name', y='messages', data=df, cut=0, inner="box", scale='width', ax=subplot)
+            sns.violinplot(x='day_name', y='messages', data=df, cut=0, inner="box", scale='width', ax=subplot, color=sns.color_palette()[2])
         else:
-            raise HelpException("plot must be either box or violin")
+            raise HelpException("plot precisa ser 'box' ou 'violin'")
         subplot.axvspan(4.5, 6.5, zorder=0, color=(0, .8, 0, 0.1))
         subplot.set_xlabel('')
-        subplot.set_ylabel('Messages per Day')
+        subplot.set_ylabel('Mensagens por dia')
         subplot.set_xlim(-0.5, 6.5)  # Need to set this explicitly to show full range of days with na data
 
         if lquery:
-            subplot.set_title(f"Messages by Day of Week for {lquery}")
+            subplot.set_title(f"Mensagens por Dia da Semana para {lquery}")
         elif user:
-            subplot.set_title(f"Messages by Day of Week for {user[1]}")
+            subplot.set_title(f"Mensagens por Dia da Semana para {user[1]}")
         else:
-            subplot.set_title("Messages by Day of Week")
+            subplot.set_title("Mensagens por Dia da Semana")
 
         sns.despine(fig=fig)
 
         bio = output_fig(fig)
-
-        return None, None, bio
+        
+        lgd = 'Esse gráfico mostra a quantidade de mensagens no grupo por dia da semana!'
+        
+        return lgd, None, bio
 
     def get_week_by_hourday(self, lquery: str = None, user: Tuple[int, str] = None, start: str = None, end: str = None) \
             -> Tuple[Union[str, None], Union[None, BytesIO]]:
@@ -953,10 +964,10 @@ class StatsRunner(object):
             query_where = f"AND {' AND '.join(query_conditions)}"
 
         if n <= 0:
-            raise HelpException(f'n must be greater than 0')
+            raise HelpException(f'n precisa ser maior que 0')
 
         if thresh < 0:
-            raise HelpException(f'n cannot be negative')
+            raise HelpException(f'n não pode ser negativo')
 
         def fetch_mean_delta(me: int, other: int, where: str, sql_dict: dict) -> Tuple[timedelta, int]:
             query = f"""
