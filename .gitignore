@@ -1,4 +1,7 @@
 .idea
+.venv
+run.sh
+alembic.ini
 dist
-telegram_stats_bot/__pycache__
+__pycache__
 telegram_stats_bot/other/bday.json
