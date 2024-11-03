@@ -21,114 +21,143 @@
 
 import sys
 
-from typing import Tuple, Union, List
+from apscheduler.executors.base import logging # pyright: ignore[reportMissingTypeStubs]
+
 if sys.version_info >= (3, 8):
     from typing import TypedDict
 else:
-    from typing_extensions import TypedDict
+    from typing_extensions import TypedDict # pyright: ignore[reportUnreachable]
 
 from datetime import datetime
 
 import telegram
 
+logger = logging.getLogger(__name__)
 
 class MessageDict(TypedDict):
-    message_id: int
-    date: Union[str, datetime]
-    from_user: int
-    forward_from_message_id: Union[int, None]
-    forward_from: Union[int, None]
-    forward_from_chat: Union[int, None]
-    caption: Union[str, None]
-    text: Union[str, None]
-    sticker_set_name: Union[str, None]
-    new_chat_title: Union[str, None]
-    reply_to_message: Union[int, None]
-    file_id: Union[str, None]
-    type: str
+    message_id:              int
+    date:                    str|datetime
+    from_user:               int|None
+    forward_from_message_id: int|None
+    forward_from:            int|None
+    forward_from_chat:       int|None
+    caption:                 str|None
+    text:                    str|None
+    sticker_set_name:        str|None
+    new_chat_title:          str|None
+    reply_to_message:        int|None
+    file_id:                 str|None
+    type:                    str|None
 
+class UserEventDict(TypedDict):
+    message_id: int|None
+    user_id:    int|None
+    date:       str|datetime
+    event:      str
 
-def parse_message(message: telegram.Message) -> Tuple[dict, List[dict]]:
-    message_dict: MessageDict = {'message_id': message.message_id,
-                                 'date': message.date,
-                                 'from_user': None,
-                                 'forward_from_message_id': message.forward_from_message_id,
-                                 'forward_from': None,
-                                 'forward_from_chat': None,
-                                 'caption': message.caption,
-                                 'text': message.text,
-                                 'sticker_set_name': None,
-                                 'new_chat_title': message.new_chat_title,
-                                 'reply_to_message': None,
-                                 'file_id': None,
-                                 'type': None,
-                                 }
-    user_event_dict = [{}]
+def parse_message(message: telegram.Message) -> tuple[MessageDict, list[UserEventDict]]:
+    message_dict = MessageDict(
+        message_id              = message.message_id,
+        date                    = message.date,
+        from_user               = None,
+        forward_from_message_id = message.forward_from_message_id,
+        forward_from            = None,
+        forward_from_chat       = None,
+        caption                 = message.caption,
+        text                    = message.text,
+        sticker_set_name        = None,
+        new_chat_title          = message.new_chat_title,
+        reply_to_message        = None,
+        file_id                 = None,
+        type                    = None,
+    )
+    user_event_dict = []
 
     if message.from_user:
         message_dict['from_user'] = message.from_user.id
 
     if message.forward_from:
-        try:
-            message_dict['forward_from'] = message.forward_from.id
-        except AttributeError:
-            pass
-        try:
-            message_dict['forward_from_chat'] = message.forward_from_chat.id
-        except AttributeError:
-            pass
+        message_dict['forward_from'] = message.forward_from.id
+
+    if message.forward_from_chat:
+        message_dict['forward_from_chat'] = message.forward_from_chat.id
 
     if message.reply_to_message:
         message_dict['reply_to_message'] = message.reply_to_message.message_id
 
-    if message.text:
-        message_dict['type'] = 'text'
-    elif message.animation:
-        message_dict['type'] = 'animation'
-        message_dict['file_id'] = message.animation.file_id
-    elif message.audio:
-        message_dict['type'] = 'audio'
-        message_dict['file_id'] = message.audio.file_id
-    elif message.document:
-        message_dict['type'] = 'document'
-        message_dict['file_id'] = message.document.file_id
-    elif message.game:
-        message_dict['type'] = 'game'
-    elif message.photo:
-        message_dict['type'] = 'photo'
-    elif message.sticker:
-        message_dict['type'] = 'sticker'
-        message_dict['file_id'] = message.sticker.file_id
-        message_dict['sticker_set_name'] = message.sticker.set_name
-    elif message.video:
-        message_dict['type'] = 'video'
-    elif message.video_note:
-        message_dict['type'] = 'video_note'
-    elif message.voice:
-        message_dict['type'] = 'voice'
-    elif message.location:
-        message_dict['type'] = 'location'
-    elif message.poll:
-        message_dict['type'] = 'poll'
-    elif message.new_chat_title:
-        message_dict['type'] = 'new_chat_title'
-    elif message.new_chat_photo:
-        message_dict['type'] = 'new_chat_photo'
-    elif message.pinned_message:
-        message_dict['type'] = 'pinned_message'
-    elif message.new_chat_members:
-        message_dict['type'] = 'new_chat_members'
-        member: telegram.user.User
-        user_event_dict = [{'message_id': message.message_id,
-                            'user_id': u_id,
-                            'date': message.date,
-                            'event': 'joined'}
-                           for u_id in [member.id for member in message.new_chat_members]]
-    elif message.left_chat_member:
-        message_dict['type'] = 'left_chat_member'
-        user_event_dict = [{'message_id': message.message_id,
-                            'user_id': message.left_chat_member.id,
-                            'date': message.date,
-                            'event': 'left'}]
+    message_type = parse_message_type(message)
+    assert message_type != None
+
+    message_dict['type'] = message_type
+    
+    match message_type:
+        case 'animation':
+            assert message.animation != None
+            message_dict['file_id'] = message.animation.file_id
+
+        case 'audio':
+            assert message.audio != None
+            message_dict['file_id'] = message.audio.file_id
+
+        case 'document':
+            assert message.document != None
+            message_dict['file_id'] = message.document.file_id
+
+        case 'sticker':
+            assert message.sticker != None
+            message_dict['file_id']          = message.sticker.file_id
+            message_dict['sticker_set_name'] = message.sticker.set_name
+
+        case 'new_chat_members':
+            user_event_dict: list[UserEventDict] = []
+            for member in message.new_chat_members:
+                user_event_dict.append(UserEventDict(
+                    user_id    = member.id,
+                    message_id = message.message_id,
+                    date       = message.date,
+                    event      = 'joined',
+                ))
+
+        case 'left_chat_member':
+            assert message.left_chat_member != None
+            user_event_dict = [
+                UserEventDict(
+                    message_id = message.message_id,
+                    user_id    = message.left_chat_member.id,
+                    date       = message.date,
+                    event      = 'left'
+                )
+            ]
+
+        case _:
+            pass
 
     return message_dict, user_event_dict
+
+message_types = [
+    "text",
+    "animation",
+    "audio",
+    "document",
+    "game",
+    "photo",
+    "sticker",
+    "video",
+    "video_note",
+    "voice",
+    "location",
+    "poll",
+    "new_chat_title",
+    "new_chat_photo",
+    "pinned_message",
+    "new_chat_members",
+    "left_chat_member",
+]
+
+def parse_message_type(message: telegram.Message) -> str|None:
+    for prop in message_types:
+        if hasattr(message, prop):
+            return prop
+    return None
+
+

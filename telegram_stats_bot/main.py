@@ -23,19 +23,20 @@ import logging
 import json
 import argparse
 import shlex
+from turtle import up
+from typing import Any, Sequence 
 import warnings
 import os
 import telegram
 import random
 import appdirs
-import pytz
-from datetime import datetime, time
+from datetime import datetime
 from telegram.error import BadRequest
-from telegram.ext import Updater, CommandHandler, MessageHandler, CallbackContext, JobQueue, ContextTypes, Application, \
+from telegram.ext import CommandHandler, JobQueue, MessageHandler, CallbackContext, ContextTypes, Application, \
     filters
 from telegram import Update, MessageEntity
+from telegram.ext._utils.types import BT
 
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from .parse import parse_message
 from .log_storage import JSONStore, PostgresStore
 from .stats import StatsRunner, get_parser, HelpException
@@ -43,8 +44,11 @@ from .utils import is_valid_date
 
 warnings.filterwarnings("ignore")
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
+logging.basicConfig(
+    format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level  = logging.INFO
+)
+
 logging.getLogger('httpx').setLevel(logging.WARNING)  # Mute normal http requests
 
 logger = logging.getLogger(__name__)
@@ -60,18 +64,15 @@ sticker_idx = None
 sticker_id = None
 
 
-async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.edited_message:
+async def log_message(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    if update.edited_message and update.effective_message:
         edited_message, user = parse_message(update.effective_message)
         if bak_store:
             bak_store.append_data('edited-messages', edited_message)
         store.update_data('messages', edited_message)
         return
 
-    try:
-        logger.info(update.effective_message.message_id)
-    except AttributeError:
-        logger.warning("No effective_message attribute")
+    assert update.effective_message != None
     message, user = parse_message(update.effective_message)
 
     if message:
@@ -79,25 +80,31 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bak_store.append_data('messages', message)
         store.append_data('messages', message)
     if len(user) > 0:
-        for i in user:
-            if i:
-                if bak_store:
-                    bak_store.append_data('user_events', i)
-                store.append_data('user_events', i)
+        for event in user:
+            if not event:
+                continue
+            if bak_store:
+                bak_store.append_data('user_events', event)
+            store.append_data('user_events', event)
 
 
-async def get_chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(text=f"Chat id: {update.effective_chat.id}")
+async def get_chatid(update: Update, _context: ContextTypes.DEFAULT_TYPE):
+    assert update.message != None
+    assert update.effective_chat != None
+    _ = await update.message.reply_text(text=f"Chat id: {update.effective_chat.id}")
 
 
-async def test_can_read_all_group_messages(context: CallbackContext):
+async def test_can_read_all_group_messages(context: CallbackContext[BT, Any, Any, Any]):
     if not context.bot.can_read_all_group_messages:
         logger.error("Bot privacy is set to enabled, cannot log messages!!!")
 
 
 async def update_usernames(context: ContextTypes.DEFAULT_TYPE):  # context.job.context contains the chat_id
+    assert stats != None
     user_ids = stats.get_message_user_ids()
     db_users = stats.get_db_users()
+
+    tg_users: dict[int, tuple[str, str]|None]
     tg_users = {user_id: None for user_id in user_ids}
     to_update = {}
     for u_id in tg_users:
@@ -125,7 +132,9 @@ async def update_usernames(context: ContextTypes.DEFAULT_TYPE):  # context.job.c
     logger.info("Usernames updated")
 
 
-async def print_stats(update: Update, context: CallbackContext):
+async def print_stats(update: Update, context: CallbackContext[BT, Any, Any, Any]):
+    assert stats != None
+    assert update.effective_user != None
     if update.effective_user.id not in stats.users:
         return
 
@@ -329,21 +338,29 @@ async def responses(update: Update, context: CallbackContext):
                         with open(raq_path, 'r') as file:
                             raqueta = file.readlines()
                         await message.reply_text(text=f"```{raqueta}```",parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
-                        
-
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('token', type=str, help="Telegram bot token")
-    parser.add_argument('chat_id', type=int, help="Telegram chat id to monitor.")
-    parser.add_argument('postgres_url', type=str, help="Sqlalchemy-compatible postgresql url.")
-    parser.add_argument('--json-path', type=str,
-                        help="Either full path to backup storage folder or prefix (will be stored in app data dir.",
-                        default="")
-    parser.add_argument('--tz', type=str,
-                        help="tz database time zone string, e.g. Europe/London",
-                        default='Etc/UTC')
+    _ = parser.add_argument('token', type=str, help="Telegram bot token")
+    _ = parser.add_argument('chat_id', type=int, help="Telegram chat id to monitor.")
+    _ = parser.add_argument('postgres_url', type=str, help="Sqlalchemy-compatible postgresql url.")
+    _ = parser.add_argument('--json-path',
+        type = str,
+        help = "Either full path to backup storage folder or prefix (will be stored in app data dir.",
+        default = ""
+    )
+    _ = parser.add_argument('--tz',
+        type=str,
+        help="tz database time zone string, e.g. Europe/London",
+        default='Etc/UTC'
+    )
+
     args = parser.parse_args()
+    assert isinstance(args.token,        str) # pyright: ignore[reportAny]
+    assert isinstance(args.json_path,    str) # pyright: ignore[reportAny] 
+    assert isinstance(args.postgres_url, str) # pyright: ignore[reportAny] 
+    assert isinstance(args.tz,           str) # pyright: ignore[reportAny] 
+    assert isinstance(args.chat_id,      int) # pyright: ignore[reportAny] 
 
     application = Application.builder().token(args.token).build()
     
@@ -351,7 +368,7 @@ if __name__ == '__main__':
     if not os.path.exists(other_path): os.mkdir(other_path)
     
     if args.json_path:
-        path = args.json_path
+        path: str = args.json_path
         if not os.path.split(path)[0]:  # Empty string for left part of path
             path = os.path.join(appdirs.user_data_dir('telegram-stats-bot'), path)
 
@@ -390,6 +407,8 @@ if __name__ == '__main__':
         application.add_handler(log_handler)
 
     job_queue = application.job_queue
+    assert isinstance(job_queue, JobQueue)
+    
     update_users_job = job_queue.run_repeating(update_usernames, interval=3600, first=5, chat_id=args.chat_id)
     test_privacy_job = job_queue.run_once(test_can_read_all_group_messages, 0)
     

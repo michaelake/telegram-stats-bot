@@ -58,7 +58,7 @@ def output_fig(fig: Figure) -> BytesIO:
 
 
 class HelpException(Exception):
-    def __init__(self, msg: str = None):
+    def __init__(self, msg: str|None = None):
         self.msg = msg
 
 

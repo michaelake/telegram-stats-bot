@@ -18,47 +18,21 @@
 #
 # You should have received a copy of the GNU Public License
 # along with this program. If not, see [http://www.gnu.org/licenses/].
-from copy import copy
-
 import datetime
 import logging
 import json
 import os
 
-from sqlalchemy import MetaData, Table, Column, create_engine, BigInteger, TIMESTAMP, Text
-from sqlalchemy_utils import database_exists, create_database
+from sqlalchemy import create_engine, update
+from sqlalchemy.orm import Session
+from sqlalchemy_utils import database_exists
 
-from .parse import MessageDict
-from .db import init_dbs
+from telegram_stats_bot.db.messages import Message
+from telegram_stats_bot.db.user_events import UserEvent
+
+from .parse import MessageDict, UserEventDict
 
 logger = logging.getLogger(__name__)
-metadata = MetaData()
-
-messages = Table('messages_utc', metadata,
-                 Column('message_id', BigInteger),
-                 Column('date', TIMESTAMP),
-                 Column('from_user', BigInteger),
-                 Column('forward_from_message_id', BigInteger),
-                 Column('forward_from', BigInteger),
-                 Column('forward_from_chat', BigInteger),
-                 Column('caption', Text),
-                 Column('text', Text),
-                 Column('sticker_set_name', Text),
-                 Column('new_chat_title', Text),
-                 Column('reply_to_message', BigInteger),
-                 Column('file_id', Text),
-                 Column('type', Text))
-user_events = Table('user_events', metadata,
-                    Column('message_id', BigInteger),
-                    Column('user_id', BigInteger),
-                    Column('date', TIMESTAMP),
-                    Column('event', Text))
-user_names = Table('user_names', metadata,
-                   Column('user_id', BigInteger),
-                   Column('date', TIMESTAMP),
-                   Column('username', Text),
-                   Column('display_name', Text))
-
 
 def date_converter(o):
     if isinstance(o, datetime.datetime):
@@ -69,7 +43,7 @@ class JSONStore(object):
     def __init__(self, path: str):
         self.store = path
 
-    def append_data(self, name: str, data: MessageDict):
+    def append_data(self, name: str, data: MessageDict|UserEventDict):
         with open(os.path.join(self.store, f"{name}.json"), 'a') as f:
             f.write(json.dumps(data, default=date_converter) + "\n")
 
@@ -78,34 +52,43 @@ class PostgresStore(object):
     def __init__(self, connection_url: str):
         self.engine = create_engine(connection_url, echo=False, isolation_level="AUTOCOMMIT")
         if not database_exists(self.engine.url):
-            create_database(connection_url, template='template1')
+            logging.critical("Database {} does not exist".format(connection_url))
 
-        with self.engine.connect() as con:
-            init_dbs(con)
-
-    def append_data(self, name: str, data: MessageDict):
+    def append_data(self, name: str, data: MessageDict|UserEventDict):
         data['date'] = str(data['date'])
         if name == 'messages':
-            with self.engine.connect() as con:
-                _ = con.execute(messages.insert(), data)
+            with Session(self.engine) as session:
+                msg = Message(**data)
+                session.add(msg)
+                session.commit()
+
         elif name == 'user_events':
-            with self.engine.connect() as con:
-                _ = con.execute(user_events.insert(), data)
+            with Session(self.engine) as session:
+                evt = UserEvent(**data)
+                session.add(evt)
+                session.commit()
         else:
             logger.warning("Tried to append to invalid table %s", name)
 
-    def update_data(self, name: str, data: MessageDict):
+    def update_data(self, name: str, data: MessageDict|UserEventDict):
         data['date'] = str(data['date'])
         if name == 'messages':
-            update_statement = messages.update()\
-                                       .where(messages.c['message_id'] == data['message_id'])
-            with self.engine.connect() as con:
-                _ = con.execute(update_statement, data)
+            with Session(self.engine) as session:
+                _ = session.execute(
+                    update(Message)
+                        .where(Message.message_id == data["message_id"])
+                        .values(**data)
+                )
+                session.commit()
+
         elif name == 'user_events':
-            update_statement = user_events.update()\
-                                          .where(user_events.c['message_id'] == data['message_id'])
-            with self.engine.connect() as con:
-                _ = con.execute(update_statement, data)
+            with Session(self.engine) as session:
+                _ = session.execute(
+                    update(UserEvent)
+                        .where(UserEvent.message_id == data["message_id"])
+                        .values(**data)
+                )
+            
         else:
             logger.warning("Tried to update to invalid table %s", name)
 
