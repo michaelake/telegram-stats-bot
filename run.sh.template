@@ -1,0 +1,4 @@
+#!/usr/bin/bash
+
+poetry run alembic upgrade head
+poetry run python3 -m telegram_stats_bot.main "KEY" "CHATID" "postgresql://USER:PASS@HOST:PORT/DATABASE_NAME"
