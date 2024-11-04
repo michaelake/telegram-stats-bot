@@ -151,7 +151,7 @@ message_types = [
     "left_chat_member",
 ]
 
-def parse_message_type(message: telegram.Message) -> str|None:
+def parse_message_type(message: telegram.Message) -> Union[str, None]:
     for prop in message_types:
         if hasattr(message, prop):
             return prop

@@ -24,7 +24,7 @@ import json
 import argparse
 import shlex
 from turtle import up
-from typing import Any, Sequence 
+from typing import Any, Sequence, Union 
 import warnings
 import os
 import telegram
@@ -104,7 +104,7 @@ async def update_usernames(context: ContextTypes.DEFAULT_TYPE):  # context.job.c
     user_ids = stats.get_message_user_ids()
     db_users = stats.get_db_users()
 
-    tg_users: dict[int, tuple[str, str]|None]
+    tg_users: dict[int, Union[tuple[str, str], None]]
     tg_users = {user_id: None for user_id in user_ids}
     to_update = {}
     for u_id in tg_users:
