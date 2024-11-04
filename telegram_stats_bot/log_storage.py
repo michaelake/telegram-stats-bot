@@ -22,6 +22,7 @@ import datetime
 import logging
 import json
 import os
+from typing import Union
 
 from sqlalchemy import create_engine, update
 from sqlalchemy.orm import Session
@@ -43,7 +44,7 @@ class JSONStore(object):
     def __init__(self, path: str):
         self.store = path
 
-    def append_data(self, name: str, data: MessageDict|UserEventDict):
+    def append_data(self, name: str, data: Union[MessageDict, UserEventDict]):
         with open(os.path.join(self.store, f"{name}.json"), 'a') as f:
             f.write(json.dumps(data, default=date_converter) + "\n")
 
@@ -54,7 +55,7 @@ class PostgresStore(object):
         if not database_exists(self.engine.url):
             logging.critical("Database {} does not exist".format(connection_url))
 
-    def append_data(self, name: str, data: MessageDict|UserEventDict):
+    def append_data(self, name: str, data: Union[MessageDict, UserEventDict]):
         data['date'] = str(data['date'])
         if name == 'messages':
             with Session(self.engine) as session:
@@ -70,7 +71,7 @@ class PostgresStore(object):
         else:
             logger.warning("Tried to append to invalid table %s", name)
 
-    def update_data(self, name: str, data: MessageDict|UserEventDict):
+    def update_data(self, name: str, data: Union[MessageDict, UserEventDict]):
         data['date'] = str(data['date'])
         if name == 'messages':
             with Session(self.engine) as session:
