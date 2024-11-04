@@ -148,8 +148,7 @@ class StatsRunner(object):
                 if display_name:
                     con.execute(text(insert_query), sql_dict)
 
-    def get_chat_counts(self, n: int = 20, lquery: str = None, mtype: str = None, start: str = None, end: str = None) \
-            -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_chat_counts(self, n: int = 20, lquery: str = None, mtype: str = None, start: str = None, end: str = None) -> Tuple[Union[str, None], Union[None, BytesIO]]:
         """
         Get top chat users
         :param lquery: Limit results to lexical query (&, |, !, <n>)
@@ -285,8 +284,8 @@ class StatsRunner(object):
         bio = output_fig(fig)
 
         user_list = ', '.join([escape_markdown(df.at[i, 'user']) for i in range(0,5)]).replace("@","")
-        lgd = "Nesse gráfico podemos ver a distribuição acumulada de mensagens por usuários, ou seja, quantos usuários contribuíram para dada quantidade de mensagens\.\n\n" \
-              f"Os cinco que mais contribuíram para o total de mensagens foram: {user_list}\."
+        lgd  = "Nesse gráfico podemos ver a distribuição acumulada de mensagens por usuários, ou seja, quantos usuários contribuíram para dada quantidade de mensagens.\n\n"
+        lgd += f"Os cinco que mais contribuíram para o total de mensagens foram: {user_list}."
         return lgd, None, bio
 
     def get_counts_by_hour(self, user: Tuple[int, str] = None, lquery: str = None, start: str = None, end: str = None) \

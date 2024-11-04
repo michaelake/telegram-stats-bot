@@ -23,7 +23,6 @@ import logging
 import json
 import argparse
 import shlex
-from turtle import up
 from typing import Any, Sequence, Union 
 import warnings
 import os
@@ -384,7 +383,7 @@ if __name__ == '__main__':
     store = PostgresStore(args.postgres_url)
     stats = StatsRunner(store.engine, tz=args.tz)
 
-    stats_handler = CommandHandler(['bstats', 'bs'], print_stats)
+    stats_handler = CommandHandler(['stats', 's'], print_stats)
     application.add_handler(stats_handler)
 
     chat_id_handler = CommandHandler('chatid', get_chatid, filters=~filters.UpdateType.EDITED)

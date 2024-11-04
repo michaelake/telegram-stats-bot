@@ -9,7 +9,7 @@ readme = "README.rst"
 include = ["examples/*", "CHANGELOG.rst"]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<4.0"
+python = ">=3.9, <3.10"
 python-telegram-bot = {version = "^20.6", extras = ["job-queue"]}
 SQLAlchemy = "^2.0.23"
 SQLAlchemy-Utils = "^0.41"

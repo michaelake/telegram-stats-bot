@@ -1,5 +1,6 @@
 .idea
 .venv
+.python-version
 run.sh
 alembic.ini
 dist
