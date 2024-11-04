@@ -33,28 +33,31 @@ def upgrade() -> None:
         sa.Column('reply_to_message', sa.BigInteger(), nullable=True),
         sa.Column('file_id', sa.Text(), nullable=True),
         sa.Column('type', sa.Text(), nullable=True),
-        sa.Column('text_index_col', postgresql.TSVECTOR(), sa.Computed("to_tsvector('english', coalesce(text, ''))", ), nullable=False)
+        sa.Column('text_index_col', postgresql.TSVECTOR(), sa.Computed("to_tsvector('english', coalesce(text, ''))", ), nullable=False),
+        if_not_exists=True,
     )
-    op.create_index('messages_utc_date_index', 'messages_utc', ['date'], unique=False)
-    op.create_index('messages_utc_from_user_index', 'messages_utc', ['from_user'], unique=False)
-    op.create_index('messages_utc_type_index', 'messages_utc', ['type'], unique=False)
-    op.create_index('text_idx', 'messages_utc', ['text_index_col'], unique=False, postgresql_using='gin')
+    op.create_index('messages_utc_date_index', 'messages_utc', ['date'], unique=False, if_not_exists=True)
+    op.create_index('messages_utc_from_user_index', 'messages_utc', ['from_user'], unique=False, if_not_exists=True)
+    op.create_index('messages_utc_type_index', 'messages_utc', ['type'], unique=False, if_not_exists=True)
+    op.create_index('text_idx', 'messages_utc', ['text_index_col'], unique=False, if_not_exists=True, postgresql_using='gin')
 
     _ = op.create_table('user_events',
         sa.Column('message_id', sa.BigInteger(), nullable=True),
         sa.Column('user_id', sa.BigInteger(), nullable=True),
         sa.Column('date', sa.TIMESTAMP(timezone=True), nullable=True),
-        sa.Column('event', sa.Text(), nullable=True)
+        sa.Column('event', sa.Text(), nullable=True),
+        if_not_exists=True,
     )
-    op.create_index('ix_user_events_message_id', 'user_events', ['message_id'], unique=False)
+    op.create_index('ix_user_events_message_id', 'user_events', ['message_id'], unique=False, if_not_exists=True)
 
     _ = op.create_table('user_names',
         sa.Column('user_id', sa.BigInteger(), nullable=True),
         sa.Column('date', sa.TIMESTAMP(timezone=True), nullable=True),
         sa.Column('username', sa.Text(), nullable=True),
-        sa.Column('display_name', sa.Text(), nullable=True)
+        sa.Column('display_name', sa.Text(), nullable=True),
+        if_not_exists=True,
     )
-    op.create_index('user_names_user_id_date_index', 'user_names', ['user_id', 'date'], unique=False)
+    op.create_index('user_names_user_id_date_index', 'user_names', ['user_id', 'date'], unique=False, if_not_exists=True)
     # ### end Alembic commands ###
 
 
