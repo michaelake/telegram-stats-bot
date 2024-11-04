@@ -20,6 +20,7 @@
 # along with this program. If not, see [http://www.gnu.org/licenses/].
 
 import sys
+from typing import Union
 
 from apscheduler.executors.base import logging # pyright: ignore[reportMissingTypeStubs]
 
@@ -36,23 +37,23 @@ logger = logging.getLogger(__name__)
 
 class MessageDict(TypedDict):
     message_id:              int
-    date:                    str|datetime
-    from_user:               int|None
-    forward_from_message_id: int|None
-    forward_from:            int|None
-    forward_from_chat:       int|None
-    caption:                 str|None
-    text:                    str|None
-    sticker_set_name:        str|None
-    new_chat_title:          str|None
-    reply_to_message:        int|None
-    file_id:                 str|None
-    type:                    str|None
+    date:                    Union[str, datetime]
+    from_user:               Union[int, None]
+    forward_from_message_id: Union[int, None]
+    forward_from:            Union[int, None]
+    forward_from_chat:       Union[int, None]
+    caption:                 Union[str, None]
+    text:                    Union[str, None]
+    sticker_set_name:        Union[str, None]
+    new_chat_title:          Union[str, None]
+    reply_to_message:        Union[int, None]
+    file_id:                 Union[str, None]
+    type:                    Union[str, None]
 
 class UserEventDict(TypedDict):
-    message_id: int|None
-    user_id:    int|None
-    date:       str|datetime
+    message_id: Union[int, None]
+    user_id:    Union[int, None]
+    date:       Union[str, datetime]
     event:      str
 
 def parse_message(message: telegram.Message) -> tuple[MessageDict, list[UserEventDict]]:
@@ -90,47 +91,43 @@ def parse_message(message: telegram.Message) -> tuple[MessageDict, list[UserEven
 
     message_dict['type'] = message_type
     
-    match message_type:
-        case 'animation':
-            assert message.animation != None
-            message_dict['file_id'] = message.animation.file_id
+    if message_type == 'animation':
+        assert message.animation != None
+        message_dict['file_id'] = message.animation.file_id
 
-        case 'audio':
-            assert message.audio != None
-            message_dict['file_id'] = message.audio.file_id
+    elif message_type == 'audio':
+        assert message.audio != None
+        message_dict['file_id'] = message.audio.file_id
 
-        case 'document':
-            assert message.document != None
-            message_dict['file_id'] = message.document.file_id
+    elif message_type == 'document':
+        assert message.document != None
+        message_dict['file_id'] = message.document.file_id
 
-        case 'sticker':
-            assert message.sticker != None
-            message_dict['file_id']          = message.sticker.file_id
-            message_dict['sticker_set_name'] = message.sticker.set_name
+    elif message_type == 'sticker':
+        assert message.sticker != None
+        message_dict['file_id']          = message.sticker.file_id
+        message_dict['sticker_set_name'] = message.sticker.set_name
 
-        case 'new_chat_members':
-            user_event_dict: list[UserEventDict] = []
-            for member in message.new_chat_members:
-                user_event_dict.append(UserEventDict(
-                    user_id    = member.id,
-                    message_id = message.message_id,
-                    date       = message.date,
-                    event      = 'joined',
-                ))
+    elif message_type == 'new_chat_members':
+        user_event_dict: list[UserEventDict] = []
+        for member in message.new_chat_members:
+            user_event_dict.append(UserEventDict(
+                user_id    = member.id,
+                message_id = message.message_id,
+                date       = message.date,
+                event      = 'joined',
+            ))
 
-        case 'left_chat_member':
-            assert message.left_chat_member != None
-            user_event_dict = [
-                UserEventDict(
-                    message_id = message.message_id,
-                    user_id    = message.left_chat_member.id,
-                    date       = message.date,
-                    event      = 'left'
-                )
-            ]
-
-        case _:
-            pass
+    elif message_type == 'left_chat_member':
+        assert message.left_chat_member != None
+        user_event_dict = [
+            UserEventDict(
+                message_id = message.message_id,
+                user_id    = message.left_chat_member.id,
+                date       = message.date,
+                event      = 'left'
+            )
+        ]
 
     return message_dict, user_event_dict
 
