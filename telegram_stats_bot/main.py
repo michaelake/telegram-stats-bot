@@ -19,11 +19,12 @@
 # You should have received a copy of the GNU Public License
 # along with this program. If not, see [http://www.gnu.org/licenses/].
 
+import sys
 import logging
 import json
 import argparse
 import shlex
-from typing import Any, Sequence, Union 
+from typing import Callable
 import warnings
 import os
 import telegram
@@ -31,10 +32,8 @@ import random
 import appdirs
 from datetime import datetime
 from telegram.error import BadRequest
-from telegram.ext import CommandHandler, JobQueue, MessageHandler, CallbackContext, ContextTypes, Application, \
-    filters
+from telegram.ext import CommandHandler, JobQueue, MessageHandler, ContextTypes, Application, filters
 from telegram import Update, MessageEntity
-from telegram.ext._utils.types import BT
 
 from .parse import parse_message
 from .log_storage import JSONStore, PostgresStore
@@ -51,6 +50,7 @@ logging.basicConfig(
 logging.getLogger('httpx').setLevel(logging.WARNING)  # Mute normal http requests
 
 logger = logging.getLogger(__name__)
+logger.info("Python version: %s", sys.version)
 
 stats = None
 
@@ -93,17 +93,20 @@ async def get_chatid(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     _ = await update.message.reply_text(text=f"Chat id: {update.effective_chat.id}")
 
 
-async def test_can_read_all_group_messages(context: CallbackContext[BT, Any, Any, Any]):
+async def test_can_read_all_group_messages(context: ContextTypes.DEFAULT_TYPE):
     if not context.bot.can_read_all_group_messages:
         logger.error("Bot privacy is set to enabled, cannot log messages!!!")
 
 
-async def update_usernames(context: ContextTypes.DEFAULT_TYPE):  # context.job.context contains the chat_id
+async def update_usernames(context: ContextTypes.DEFAULT_TYPE):
     assert stats != None
+    assert context.job != None
+    assert context.job.chat_id != None
+
     user_ids = stats.get_message_user_ids()
     db_users = stats.get_db_users()
 
-    tg_users: dict[int, Union[tuple[str, str], None]]
+    tg_users: dict[int, tuple[str, str]|None]
     tg_users = {user_id: None for user_id in user_ids}
     to_update = {}
     for u_id in tg_users:
@@ -131,9 +134,11 @@ async def update_usernames(context: ContextTypes.DEFAULT_TYPE):  # context.job.c
     logger.info("Usernames updated")
 
 
-async def print_stats(update: Update, context: CallbackContext[BT, Any, Any, Any]):
+async def print_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     assert stats != None
     assert update.effective_user != None
+    assert context.args != None
+
     if update.effective_user.id not in stats.users:
         return
 
@@ -144,6 +149,7 @@ async def print_stats(update: Update, context: CallbackContext[BT, Any, Any, Any
         ns = stats_parser.parse_args(shlex.split(" ".join(context.args)))
     except HelpException as e:
         text = e.msg
+        assert text != None
         await send_help(text, context, update)
         return
     except argparse.ArgumentError as e:
@@ -152,12 +158,12 @@ async def print_stats(update: Update, context: CallbackContext[BT, Any, Any, Any
         return
     else:
         args = vars(ns)
-        func = args.pop('func')
+        func: Callable[..., tuple[str, bool, str]] = args.pop('func')
 
         try:
             if args['user']:
                 try:
-                    uid = args['user']
+                    uid: int = args['user']
                     args['user'] = uid, stats.users[uid][0]
                 except KeyError:
                     await send_help("unknown userid", context, update)
@@ -176,23 +182,32 @@ async def print_stats(update: Update, context: CallbackContext[BT, Any, Any, Any
             text, md, image = func(**args)
         except HelpException as e:
             text = e.msg
+            assert text != None
+
             await send_help(text, context, update)
             return
 
     if image:
-        await update.effective_message.reply_photo(caption='`' + " ".join(context.args) + '`', photo=image,
-                                                   parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+        assert update.effective_message != None
+        _ = await update.effective_message.reply_photo(
+            caption    = '`' + " ".join(context.args) + '`',
+            photo      = image,
+            parse_mode = telegram.constants.ParseMode.MARKDOWN_V2
+        )
         
     if text:
+        assert update.effective_message != None
         if md == False:
-            await update.effective_message.reply_text(text=text)
+            _ = await update.effective_message.reply_text(text=text)
         else:
-            await update.effective_message.reply_text(text=text, parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+            _ = await update.effective_message.reply_text(text=text, parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
 
 
 
 
-async def bday_info(update: Update, context: CallbackContext):
+async def bday_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    assert context.args != None
+
     args = context.args
     md_flag = True
     
@@ -205,7 +220,8 @@ async def bday_info(update: Update, context: CallbackContext):
         user = args[1]
         date = args[2]
         if not is_valid_date(date):
-            await update.message.reply_text(text='Acho que a data está errada :(')
+            assert update.message != None
+            _ = await update.message.reply_text(text='Acho que a data está errada :(')
             return
     elif len(args) == 2:
         user = args[1]
@@ -238,15 +254,24 @@ async def bday_info(update: Update, context: CallbackContext):
             text = "Ninguém me disse os aniversários."
     elif opt == 'mes':
         current_month = datetime.now().month
-        month_bday = {user: date for user, date in bday_dict.items() if datetime.strptime(date, '%d/%m/%Y').month == current_month}
+        month_bday = {
+            user: date
+                for user, date in bday_dict.items()
+                    if datetime.strptime(date, '%d/%m/%Y').month == current_month
+        }
         if len(month_bday.items()) > 0:
             text = "\n".join([f"{user}: {date}" for user, date in month_bday.items()])
         else: text = 'Ninguém faz aniversário nesse mês!'
     elif opt == 'dia':
         current_day = datetime.now().day
-        day_bday = {user: date for user, date in bday_dict.items() if datetime.strptime(date, '%d/%m/%Y').day == current_day}
+        day_bday = {
+            user: date
+                for user, date in bday_dict.items()
+                    if datetime.strptime(date, '%d/%m/%Y').day == current_day
+        }
         if len(day_bday.items()) > 0:
-            text = "Parabéns " + " e ".join([f"{user}" for user, date in day_bday.items()]) + "!\n\nhttps://www.youtube.com/watch?v=1Mcdh2Vf2Xk"
+            text = "Parabéns {}!\n\nhttps://www.youtube.com/watch?v=1Mcdh2Vf2Xk"
+            text = text.format(" e ".join([f"{user}" for user, date in day_bday.items()]))
             md_flag = False
         else: 
             text = 'Ninguém faz aniversário hoje!'
@@ -256,29 +281,38 @@ async def bday_info(update: Update, context: CallbackContext):
     with open(bday_json, 'w') as file:
         json.dump(bday_dict, file)
 
+    assert update.message != None
     if md_flag:
-        await update.message.reply_text(text=f"```\n{text}\n```",
-                                        parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+        _ = await update.message.reply_text(
+            text       = f"```\n{text}\n```",
+            parse_mode = telegram.constants.ParseMode.MARKDOWN_V2
+        )
     else:
-        await update.message.reply_text(text=f"\n{text}\n")
+        _ = await update.message.reply_text(text=f"\n{text}\n")
 
-async def dice_dicer(update: Update, context: CallbackContext):
+async def dice_dicer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
+    assert args != None
     
+    text = ""
     if len(args) > 1:
         _max = 1
     else:
         if int(args[0]):
             _max = int(args[0])
-            res = random.randint(1,_max+1)
-            text=f"\nJoguei um D{_max} e peguei {res}\n"
+            res  = random.randint(1,_max+1)
+            text = f"\nJoguei um D{_max} e peguei {res}\n"
         else:
-            text="Meus dados só tem números!"
+            text = "Meus dados só tem números!"
 
-    await update.message.reply_text(text=text)
+    if not text:
+        return
+
+    assert update.message != None
+    _ = await update.message.reply_text(text = text)
 
 
-async def info_giver(update: Update, context: CallbackContext):
+async def info_giver(update: Update, _context: ContextTypes.DEFAULT_TYPE):
     info_path = os.path.join(other_path, 'infos.txt')
     print(info_path)
     try:
@@ -286,10 +320,14 @@ async def info_giver(update: Update, context: CallbackContext):
             text = infos.read()
     except FileNotFoundError:
         text = "q"
-    await update.message.reply_text(text=f"```\n{text}\n```",
-                                    parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+
+    assert update.message != None
+    _ = await update.message.reply_text(
+        text       = f"```\n{text}\n```",
+        parse_mode = telegram.constants.ParseMode.MARKDOWN_V2
+    )
     
-async def send_help(text: str, context: CallbackContext, update: Update):
+async def send_help(text: str, context: ContextTypes.DEFAULT_TYPE, update: Update):
     """
     Send help text to user. Tries to send a direct message if possible.
     :param text: text to send
@@ -297,15 +335,23 @@ async def send_help(text: str, context: CallbackContext, update: Update):
     :param update:
     :return:
     """
+    assert update.effective_user != None
+    assert context.bot != None
+
     try:
-        await context.bot.send_message(chat_id=update.effective_user.id,
-                                       text=f"```\n{text}\n```",
-                                       parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+        _ = await context.bot.send_message(
+            chat_id    = update.effective_user.id,
+            text       = f"```\n{text}\n```",
+            parse_mode = telegram.constants.ParseMode.MARKDOWN_V2
+        )
     except telegram.error.Forbidden:  # If user has never chatted with bot
-        await update.message.reply_text(text=f"```\n{text}\n```",
+        assert update.message != None
+        _ = await update.message.reply_text(text=f"```\n{text}\n```",
                                         parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
 
 async def check_dates_and_notify(context: ContextTypes.DEFAULT_TYPE):
+    assert context.job != None
+    assert context.job
     logger.info("Checking birthdays")
     bday_dict = {}
     bday_json = os.path.join(other_path, 'bday.json')
@@ -316,27 +362,31 @@ async def check_dates_and_notify(context: ContextTypes.DEFAULT_TYPE):
     today = datetime.now().strftime('%d/%m/%Y')
        
     for user, date in bday_dict.items():
-            if today == date:
-                # Envia a mensagem de aniversário
-                await context.bot.send_message(chat_id=context.job.chat_id,
-                                               text=f"Hoje é o aniversário de {user}!")
+        if today == date:
+            assert context.job.chat_id != None
+            # Envia a mensagem de aniversário
+            _ = await context.bot.send_message(
+                chat_id = context.job.chat_id,
+                text    = f"Hoje é o aniversário de {user}!"
+            )
 
-async def responses(update: Update, context: CallbackContext):
+async def responses(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     ff_text = 'Você já ouviu falar do aclamado MMORPG Final Fantasy XIV? Com uma versão gratuita expandida, você pode jogar todo o conteúdo de A Realm Reborn e a premiada expansão Stormblood até o nível 70 gratuitamente, sem restrições de tempo de jogo.'
     if message and message.entities:
         bot_username = context.bot.username
         for entity in message.entities:
             if entity.type == MessageEntity.MENTION:
+                assert message.text != None
                 mentioned_username = message.text[entity.offset:entity.offset + entity.length]
                 if mentioned_username == f"@{bot_username}":
                     if any(kw in message.text for kw in ["ffxiv", 'ff14']):
-                        await message.reply_text(ff_text)
+                        _ = await message.reply_text(ff_text)
                     elif 'raqueta' in message.text:
                         raq_path = os.path.join(other_path, 'raqueta.txt')
                         with open(raq_path, 'r') as file:
                             raqueta = file.readlines()
-                        await message.reply_text(text=f"```{raqueta}```",parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
+                        _ = await message.reply_text(text=f"```{raqueta}```",parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
