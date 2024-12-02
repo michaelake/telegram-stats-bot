@@ -48,7 +48,6 @@ sns.set_palette("Set2")
 logging.getLogger('matplotlib').setLevel(logging.WARNING)  # Mute matplotlib debug messages
 logger = logging.getLogger()
 
-
 def output_fig(fig: Figure) -> BytesIO:
     bio = BytesIO()
     bio.name = 'plot.png'

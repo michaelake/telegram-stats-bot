@@ -23,8 +23,7 @@ import sys
 import logging
 import json
 import argparse
-import shlex
-from typing import Callable
+from typing import Union
 import warnings
 import os
 import telegram
@@ -32,8 +31,11 @@ import random
 import appdirs
 from datetime import datetime
 from telegram.error import BadRequest
-from telegram.ext import CommandHandler, JobQueue, MessageHandler, ContextTypes, Application, filters
+from telegram.ext import JobQueue, MessageHandler, ContextTypes, Application, filters
 from telegram import Update, MessageEntity
+
+from telegram_stats_bot import global_vars
+from telegram_stats_bot.commands import load_commands
 
 from .parse import parse_message
 from .log_storage import JSONStore, PostgresStore
@@ -51,8 +53,6 @@ logging.getLogger('httpx').setLevel(logging.WARNING)  # Mute normal http request
 
 logger = logging.getLogger(__name__)
 logger.info("Python version: %s", sys.version)
-
-stats = None
 
 try:
     with open("./sticker-keys.json", 'r') as f:
@@ -87,11 +87,6 @@ async def log_message(update: Update, _context: ContextTypes.DEFAULT_TYPE):
             store.append_data('user_events', event)
 
 
-async def get_chatid(update: Update, _context: ContextTypes.DEFAULT_TYPE):
-    assert update.message != None
-    assert update.effective_chat != None
-    _ = await update.message.reply_text(text=f"Chat id: {update.effective_chat.id}")
-
 
 async def test_can_read_all_group_messages(context: ContextTypes.DEFAULT_TYPE):
     if not context.bot.can_read_all_group_messages:
@@ -99,6 +94,8 @@ async def test_can_read_all_group_messages(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def update_usernames(context: ContextTypes.DEFAULT_TYPE):
+    stats = global_vars.stats
+
     assert stats != None
     assert context.job != None
     assert context.job.chat_id != None
@@ -106,7 +103,7 @@ async def update_usernames(context: ContextTypes.DEFAULT_TYPE):
     user_ids = stats.get_message_user_ids()
     db_users = stats.get_db_users()
 
-    tg_users: dict[int, tuple[str, str]|None]
+    tg_users: dict[int, Union[tuple[str, str], None]]
     tg_users = {user_id: None for user_id in user_ids}
     to_update = {}
     for u_id in tg_users:
@@ -132,226 +129,9 @@ async def update_usernames(context: ContextTypes.DEFAULT_TYPE):
         logger.warning("Couldn't acquire username lock.")
         return
     logger.info("Usernames updated")
-
-
-async def print_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    assert stats != None
-    assert update.effective_user != None
-    assert context.args != None
-
-    if update.effective_user.id not in stats.users:
-        return
-
-    stats_parser = get_parser(stats)
-    image = None
-
-    try:
-        ns = stats_parser.parse_args(shlex.split(" ".join(context.args)))
-    except HelpException as e:
-        text = e.msg
-        assert text != None
-        await send_help(text, context, update)
-        return
-    except argparse.ArgumentError as e:
-        text = str(e)
-        await send_help(text, context, update)
-        return
-    else:
-        args = vars(ns)
-        func: Callable[..., tuple[str, bool, str]] = args.pop('func')
-
-        try:
-            if args['user']:
-                try:
-                    uid: int = args['user']
-                    args['user'] = uid, stats.users[uid][0]
-                except KeyError:
-                    await send_help("unknown userid", context, update)
-                    return
-        except KeyError:
-            pass
-
-        try:
-            if args['me'] and not args['user']:  # Lets auto-user work by ignoring auto-input me arg
-                args['user'] = update.effective_user.id, update.effective_user.name
-            del args['me']
-        except KeyError:
-            pass
-
-        try:
-            text, md, image = func(**args)
-        except HelpException as e:
-            text = e.msg
-            assert text != None
-
-            await send_help(text, context, update)
-            return
-
-    if image:
-        assert update.effective_message != None
-        _ = await update.effective_message.reply_photo(
-            caption    = '`' + " ".join(context.args) + '`',
-            photo      = image,
-            parse_mode = telegram.constants.ParseMode.MARKDOWN_V2
-        )
-        
-    if text:
-        assert update.effective_message != None
-        if md == False:
-            _ = await update.effective_message.reply_text(text=text)
-        else:
-            _ = await update.effective_message.reply_text(text=text, parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
-
-
-
-
-async def bday_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    assert context.args != None
-
-    args = context.args
-    md_flag = True
     
-    if len(args) >= 1:
-        opt = args[0]
-    else:
-        opt = 'agenda'
-
-    if len(args) == 3:
-        user = args[1]
-        date = args[2]
-        if not is_valid_date(date):
-            assert update.message != None
-            _ = await update.message.reply_text(text='Acho que a data está errada :(')
-            return
-    elif len(args) == 2:
-        user = args[1]
-        date = None
-    else:
-        user = date = None
-    
-    bday_json = os.path.join(other_path, 'bday.json')
-    
-    bday_dict = {} 
-    
-    if os.path.exists(bday_json):
-        with open(bday_json, 'r') as file:
-            bday_dict.update(json.load(file))
-            
-    if opt == 'add' and user and date:
-        bday_dict[user] = date
-        text = f"Aniversário do usuário {user} atualizado para {date}."
-    
-    elif opt == 'remove' and user:
-        if user in bday_dict:
-            del bday_dict[user]
-            text = f"Aniversário do usuário {user} removido."
-        else:
-            text = f"Usuário {user} não encontrado."
-    
-    elif opt == 'agenda':
-        text = "\n".join([f"{user}: {date}" for user, date in bday_dict.items()])
-        if not text:
-            text = "Ninguém me disse os aniversários."
-    elif opt == 'mes':
-        current_month = datetime.now().month
-        month_bday = {
-            user: date
-                for user, date in bday_dict.items()
-                    if datetime.strptime(date, '%d/%m/%Y').month == current_month
-        }
-        if len(month_bday.items()) > 0:
-            text = "\n".join([f"{user}: {date}" for user, date in month_bday.items()])
-        else: text = 'Ninguém faz aniversário nesse mês!'
-    elif opt == 'dia':
-        current_day = datetime.now().day
-        day_bday = {
-            user: date
-                for user, date in bday_dict.items()
-                    if datetime.strptime(date, '%d/%m/%Y').day == current_day
-        }
-        if len(day_bday.items()) > 0:
-            text = "Parabéns {}!\n\nhttps://www.youtube.com/watch?v=1Mcdh2Vf2Xk"
-            text = text.format(" e ".join([f"{user}" for user, date in day_bday.items()]))
-            md_flag = False
-        else: 
-            text = 'Ninguém faz aniversário hoje!'
-    else:
-        text = "Comando ou argumentos inválidos."
-        
-    with open(bday_json, 'w') as file:
-        json.dump(bday_dict, file)
-
-    assert update.message != None
-    if md_flag:
-        _ = await update.message.reply_text(
-            text       = f"```\n{text}\n```",
-            parse_mode = telegram.constants.ParseMode.MARKDOWN_V2
-        )
-    else:
-        _ = await update.message.reply_text(text=f"\n{text}\n")
-
-async def dice_dicer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    assert args != None
-    
-    text = ""
-    if len(args) > 1:
-        _max = 1
-    else:
-        if int(args[0]):
-            _max = int(args[0])
-            res  = random.randint(1,_max+1)
-            text = f"\nJoguei um D{_max} e peguei {res}\n"
-        else:
-            text = "Meus dados só tem números!"
-
-    if not text:
-        return
-
-    assert update.message != None
-    _ = await update.message.reply_text(text = text)
-
-
-async def info_giver(update: Update, _context: ContextTypes.DEFAULT_TYPE):
-    info_path = os.path.join(other_path, 'infos.txt')
-    print(info_path)
-    try:
-        with open(info_path, 'r') as infos:
-            text = infos.read()
-    except FileNotFoundError:
-        text = "q"
-
-    assert update.message != None
-    _ = await update.message.reply_text(
-        text       = f"```\n{text}\n```",
-        parse_mode = telegram.constants.ParseMode.MARKDOWN_V2
-    )
-    
-async def send_help(text: str, context: ContextTypes.DEFAULT_TYPE, update: Update):
-    """
-    Send help text to user. Tries to send a direct message if possible.
-    :param text: text to send
-    :param context:
-    :param update:
-    :return:
-    """
-    assert update.effective_user != None
-    assert context.bot != None
-
-    try:
-        _ = await context.bot.send_message(
-            chat_id    = update.effective_user.id,
-            text       = f"```\n{text}\n```",
-            parse_mode = telegram.constants.ParseMode.MARKDOWN_V2
-        )
-    except telegram.error.Forbidden:  # If user has never chatted with bot
-        assert update.message != None
-        _ = await update.message.reply_text(text=f"```\n{text}\n```",
-                                        parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
-
 async def check_dates_and_notify(context: ContextTypes.DEFAULT_TYPE):
     assert context.job != None
-    assert context.job
     logger.info("Checking birthdays")
     bday_dict = {}
     bday_json = os.path.join(other_path, 'bday.json')
@@ -388,6 +168,16 @@ async def responses(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             raqueta = file.readlines()
                         _ = await message.reply_text(text=f"```{raqueta}```",parse_mode=telegram.constants.ParseMode.MARKDOWN_V2)
     
+class CommandLineArgs(argparse.Namespace):
+    token:        str = ''
+    chat_id:      int = 0
+    postgres_url: str = ''
+    json_path:    str = ''
+    tz:           str = ''
+
+class Program:
+    pass
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     _ = parser.add_argument('token', type=str, help="Telegram bot token")
@@ -395,7 +185,7 @@ if __name__ == '__main__':
     _ = parser.add_argument('postgres_url', type=str, help="Sqlalchemy-compatible postgresql url.")
     _ = parser.add_argument('--json-path',
         type = str,
-        help = "Either full path to backup storage folder or prefix (will be stored in app data dir.",
+        help = "Either full path to backup storage folder or prefix (will be stored in app data dir).",
         default = ""
     )
     _ = parser.add_argument('--tz',
@@ -404,17 +194,12 @@ if __name__ == '__main__':
         default='Etc/UTC'
     )
 
-    args = parser.parse_args()
-    assert isinstance(args.token,        str) # pyright: ignore[reportAny]
-    assert isinstance(args.json_path,    str) # pyright: ignore[reportAny] 
-    assert isinstance(args.postgres_url, str) # pyright: ignore[reportAny] 
-    assert isinstance(args.tz,           str) # pyright: ignore[reportAny] 
-    assert isinstance(args.chat_id,      int) # pyright: ignore[reportAny] 
-
+    args        = parser.parse_args(namespace=CommandLineArgs())
     application = Application.builder().token(args.token).build()
     
     other_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'other')
     if not os.path.exists(other_path): os.mkdir(other_path)
+    global_vars.other_path = other_path
     
     if args.json_path:
         path: str = args.json_path
@@ -431,22 +216,9 @@ if __name__ == '__main__':
         args.postgres_url = args.postgres_url.replace('postgresql://', 'postgresql+psycopg://', 1)
 
     store = PostgresStore(args.postgres_url)
-    stats = StatsRunner(store.engine, tz=args.tz)
+    global_vars.stats = StatsRunner(store.engine, tz=args.tz)
 
-    stats_handler = CommandHandler(['stats', 's'], print_stats)
-    application.add_handler(stats_handler)
-
-    chat_id_handler = CommandHandler('chatid', get_chatid, filters=~filters.UpdateType.EDITED)
-    application.add_handler(chat_id_handler)
-    
-    bday_handler = CommandHandler(['niver', 'n'], bday_info)                                                                                                                                                                                   
-    application.add_handler(bday_handler)
-    
-    info_handler = CommandHandler(['help', 'h'], info_giver)
-    application.add_handler(info_handler)
-    
-    dice_handler = CommandHandler(['dados', 'd'], dice_dicer)
-    application.add_handler(dice_handler)
+    load_commands(application)
 
     res_handler = MessageHandler(filters.Entity(MessageEntity.MENTION), responses)
     application.add_handler(res_handler)
