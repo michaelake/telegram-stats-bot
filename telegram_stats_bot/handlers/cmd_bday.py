@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from telegram_stats_bot import global_vars
-from telegram_stats_bot.commands.decorator import command
+from telegram_stats_bot.handlers.decorator import command
 from telegram_stats_bot.utils import is_valid_date
 
 @command(["niver", "n"])
@@ -27,14 +27,15 @@ async def command_niver(update: Update, context: ContextTypes.DEFAULT_TYPE):
         date = args[2]
         if not is_valid_date(date):
             assert update.message != None
-            _ = await update.message.reply_text(text='Acho que a data está errada :(')
+            _ = await update.message.reply_text(text='Acho que a data está errada :(') #)
             return
     elif len(args) == 2:
         user = args[1]
         date = None
     else:
         user = date = None
-    
+
+    assert global_vars.other_path != None
     bday_json = os.path.join(global_vars.other_path, 'bday.json')
     
     bday_dict = {} 

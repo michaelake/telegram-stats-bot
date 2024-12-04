@@ -7,10 +7,12 @@ from . import decorator
 
 __all__: list[str] = []
 
-def load_commands(application: Application[Any, Any, Any, Any, Any, Any]):
+def load_handlers(application: Application[Any, Any, Any, Any, Any, Any]):
     decorator.application = application
 
+    allowed_prefixes = [ "cmd_", "msg_", "job_" ]
+
     for module in os.listdir(os.path.dirname(__file__)):
-        if module[:4] != "cmd_" or module[-3:] != ".py":
+        if module[:4] not in allowed_prefixes or module[-3:] != ".py":
             continue
         _ = importlib.import_module(__name__ + "." + module[:-3])

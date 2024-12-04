@@ -1,6 +1,7 @@
 from telegram import Update
 from telegram.ext import ContextTypes, filters
-from telegram_stats_bot.commands.decorator import command
+
+from telegram_stats_bot.handlers.decorator import command
 
 @command("chatid", filters=~filters.UpdateType.EDITED)
 async def command_chatid(update: Update, _context: ContextTypes.DEFAULT_TYPE):

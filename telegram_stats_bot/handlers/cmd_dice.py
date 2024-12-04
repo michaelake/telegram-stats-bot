@@ -1,7 +1,8 @@
 import random
 from telegram import Update
 from telegram.ext import ContextTypes
-from telegram_stats_bot.commands.decorator import command
+
+from telegram_stats_bot.handlers.decorator import command
 
 @command(["dice", "d"])
 async def dice_dicer(update: Update, context: ContextTypes.DEFAULT_TYPE):

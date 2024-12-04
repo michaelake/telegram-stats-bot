@@ -6,7 +6,7 @@ import telegram
 from telegram.ext import ContextTypes
 
 from telegram_stats_bot import global_vars
-from telegram_stats_bot.commands.decorator import command
+from telegram_stats_bot.handlers.decorator import command
 from telegram_stats_bot.stats import HelpException, get_parser
 
 @command(["stats", "s"])
