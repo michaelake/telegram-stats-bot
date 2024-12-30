@@ -5,8 +5,6 @@ from typing import Any
 from telegram.ext import Application
 from . import decorator
 
-__all__: list[str] = []
-
 def load_handlers(application: Application[Any, Any, Any, Any, Any, Any]):
     decorator.application = application
 

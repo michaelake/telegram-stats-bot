@@ -22,9 +22,8 @@ import string
 import secrets
 import re
 import datetime
-import random
-import os
-from datetime import time
+from typing import Any
+from typing_extensions import override
 from sqlalchemy import Column, Integer, Text
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.functions import FunctionElement
@@ -35,7 +34,7 @@ md_match = re.compile(r"(\[[^][]*]\(http[^()]*\))|([_*[\]()~>#+-=|{}.!\\])")
 
 
 def escape_markdown(string: str) -> str:
-    def url_match(match: re.Match):
+    def url_match(match: re.Match[str]):
         if match.group(1):
             return f'{match.group(1)}'
         return f'\\{match.group(2)}'
@@ -44,15 +43,21 @@ def escape_markdown(string: str) -> str:
 
 
 # Modified from https://stackoverflow.com/a/49726653/3946475
-class TsStat(FunctionElement):
+class TsStat(FunctionElement[Any]):
     name = "ts_stat"
 
+    word   = Column('word',   Text)
+    ndoc   = Column('ndoc',   Integer)
+    nentry = Column('nentry', Integer)
+
     @property
+    @override
     def columns(self):
-        word = Column('word', Text)
-        ndoc = Column('ndoc', Integer)
-        nentry = Column('nentry', Integer)
-        return ColumnCollection(columns=((col.name, col) for col in (word, ndoc, nentry)))
+        return ColumnCollection(columns=(
+            ("word",   self.word),
+            ("ndoc",   self.ndoc),
+            ("nentry", self.nentry),
+        ))
 
 
 @compiles(TsStat, 'postgresql')

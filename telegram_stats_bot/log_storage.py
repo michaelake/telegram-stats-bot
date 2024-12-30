@@ -24,12 +24,13 @@ import json
 import os
 from typing import Union
 
-from sqlalchemy import create_engine, update
+from sqlalchemy import Engine, create_engine, update
+from sqlalchemy.dialects.postgresql import Any
 from sqlalchemy.orm import Session
 from sqlalchemy_utils import database_exists
 
-from telegram_stats_bot.db.messages import Message
-from telegram_stats_bot.db.user_events import UserEvent
+from telegram_stats_bot.db.tbl_messages import Message
+from telegram_stats_bot.db.tbl_user_events import UserEvent
 
 from .parse import MessageDict, UserEventDict
 
@@ -54,6 +55,9 @@ class PostgresStore(object):
         self.engine = create_engine(connection_url, echo=False, isolation_level="AUTOCOMMIT")
         if not database_exists(self.engine.url):
             logging.critical("Database {} does not exist".format(connection_url))
+
+    def get_engine(self) -> Engine:
+        return self.engine
 
     def append_data(self, name: str, data: Union[MessageDict, UserEventDict]):
         data['date'] = str(data['date'])

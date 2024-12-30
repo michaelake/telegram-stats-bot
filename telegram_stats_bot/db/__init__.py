@@ -1,14 +1,15 @@
-import logging
+import importlib
+import os
 
-from .base     import Base
-from .messages import Message
-from .user_names  import UserName
-from .user_events import UserEvent
+from .base import Base
 
-__all__ = [
-    "Base", "Message", "UserName", "UserEvent"
-]
+def load_tables():
+    allowed_prefixes = [ "tbl_" ]
 
-logger = logging.getLogger(__name__)
+    for module in os.listdir(os.path.dirname(__file__)):
+        if module[:4] not in allowed_prefixes or module[-3:] != ".py":
+            continue
+        _ = importlib.import_module(__name__ + "." + module[:-3])
 
+load_tables()
 metadata = Base.metadata;

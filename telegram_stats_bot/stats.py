@@ -20,25 +20,37 @@
 # along with this program. If not, see [http://www.gnu.org/licenses/].
 
 import logging
-from typing import Dict, List, Tuple, Text, NoReturn, Union
+from sre_compile import dis
+import sys
+from textwrap import dedent
+from typing import IO, Any, Callable, Optional, Sequence, Text, NoReturn, TypedDict, Union
 from threading import Lock
 from io import BytesIO
 import argparse
 import inspect
 import re
 from datetime import timedelta, datetime
+from matplotlib.axes import Axes
+from pandas._libs.properties import AxisProperty
+from pandas.core.api import DataFrame
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql.ext import to_tsquery
+from sqlalchemy.sql.functions import count, current_timestamp, user
+from sqlalchemy_utils.aggregates import sqlalchemy
+from typing_extensions import override, reveal_type
 
 import pandas as pd
 import seaborn as sns
 import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.dates import date2num
-from sqlalchemy.engine import Engine
-from sqlalchemy import select, func, text
-from sqlalchemy.dialects import postgresql
+from sqlalchemy.engine import Engine, Row
+from sqlalchemy import desc, select, func, text, update
+
+from telegram_stats_bot.db.tbl_messages import Message
+from telegram_stats_bot.db.tbl_user_names import UserName
 
 from .utils import escape_markdown, TsStat, random_quote
-from .db import messages
 from . import __version__
 
 sns.set_context('paper')
@@ -48,106 +60,153 @@ sns.set_palette("Set2")
 logging.getLogger('matplotlib').setLevel(logging.WARNING)  # Mute matplotlib debug messages
 logger = logging.getLogger()
 
+
 def output_fig(fig: Figure) -> BytesIO:
     bio = BytesIO()
     bio.name = 'plot.png'
-    fig.savefig(bio, bbox_inches='tight', dpi=200, format='png')
-    bio.seek(0)
+    fig.savefig(bio, bbox_inches='tight', dpi=200, format='png') # pyright: ignore[reportUnknownMemberType]
+    _ = bio.seek(0)
     return bio
 
 
 class HelpException(Exception):
-    def __init__(self, msg: Union[str, None] = None):
+    def __init__(self, msg: Optional[str] = None):
         self.msg = msg
+        super().__init__()
 
 
 class InternalParser(argparse.ArgumentParser):
+    @override
     def error(self, message: Text) -> NoReturn:
         try:
             raise  # Reraises mostly ArgumentError for bad arg
         except RuntimeError:
             raise HelpException(message)
 
-    def print_help(self, file=None) -> None:
+    @override
+    def print_help(self, file: Optional[IO[str]] = None) -> None:
         raise HelpException(self.format_help())
 
-    def _print_message(self, message: str, file=None) -> None:
+    @override
+    def _print_message(self, message: str, file: Optional[IO[str]] = None) -> None:
         raise HelpException(message)
 
-    def exit(self, status=None, message=None):
-        pass
+    @override
+    def exit(self, status: Optional[int] = None, message: Optional[str] = None) -> NoReturn:
+        if message:
+            print(message)
+        sys.exit(status)
+
+
+StatsRunnerResult = tuple[Optional[str], Optional[bool], Optional[BytesIO]]
 
 
 class StatsRunner(object):
-    allowed_methods = {'counts': "get_chat_counts",
-                       'ecdf': 'get_chat_ecdf',
-                       'hours': "get_counts_by_hour",
-                       'days': "get_counts_by_day",
-                       'week': "get_week_by_hourday",
-                       'history': "get_message_history",
-                       'titles': 'get_title_history',
-                       'user': 'get_user_summary',
-                       'corr': "get_user_correlation",
-                       'delta': "get_message_deltas",
-                       'types': "get_type_stats",
-                       'words': "get_word_stats",
-                       'random': "get_random_message"}
+    allowed_methods = {
+        "counts":  "get_chat_counts",
+        "ecdf":    "get_chat_ecdf",
+        "hours":   "get_counts_by_hour",
+        "days":    "get_counts_by_day",
+        "week":    "get_week_by_hourday",
+        "history": "get_message_history",
+        "titles":  "get_title_history",
+        "user":    "get_user_summary",
+        "corr":    "get_user_correlation",
+        "delta":   "get_message_deltas",
+        "types":   "get_type_stats",
+        "words":   "get_word_stats",
+        "random":  "get_random_message",
+    }
+
+    engine: Engine
+    tz:     str
+    users:  dict[int, tuple[str, str]]
+    users_lock: Lock
 
     def __init__(self, engine: Engine, tz: str = 'Etc/UTC'):
         self.engine = engine
-        self.tz = tz
-
-        self.users: Dict[int, Tuple[str, str]] = self.get_db_users()
+        self.tz     = tz
+        self.users  = self.get_db_users()
         self.users_lock = Lock()
 
-    def get_message_user_ids(self) -> List[int]:
+    def get_message_user_ids(self) -> list[int]:
         """Returns list of unique user ids from messages in database."""
+        query = select(Message.from_user.distinct())
         with self.engine.connect() as con:
-            result = con.execute(text("SELECT DISTINCT from_user FROM messages_utc;"))
-        return [user for user, in result.fetchall() if user is not None]
+            result = con.execute(query)
+        return [ user for user, in result.fetchall() if user is not None ] # pyright: ignore[reportAny]
 
-    def get_db_users(self) -> Dict[int, Tuple[str, str]]:
+    def get_db_users(self) -> dict[int, tuple[str, str]]:
         """Returns dictionary mapping user ids to usernames and full names."""
-        query = """
-        select user_id, username, display_name from (
-            select
-                *,
-                row_number() over(partition by user_id order by date desc) as rn
-            from
-                user_names
-            ) t
-        where t.rn = 1
-        """
+
+        subquery = select(
+            UserName.user_id,
+            UserName.username,
+            UserName.display_name,
+            func.row_number()
+                .over(
+                    partition_by = UserName.user_id,
+                    order_by     = desc(UserName.date),
+                )
+                .label("rn"),
+        ).alias("t")
+
+        query = select(
+            subquery.columns["user_id"],
+            subquery.columns["username"],
+            subquery.columns["display_name"],
+        ).where(subquery.columns["rn"] == 1)
 
         with self.engine.connect() as con:
-            result = con.execute(text(query))
-        result = result.fetchall()
+            result = con.execute(query)
 
-        return {user_id: (username, name) for user_id, username, name in result}
+        return { row[0]: (row[1], row[2]) for row in result }
 
-    def update_user_ids(self, user_dict: Dict[int, Tuple[str, str]]):
+    def update_user_ids(self, user_dict: dict[int, tuple[str, str]]):
         """
         Updates user names table with user_dict
         :param user_dict: mapping of user ids to (username, display name)
         """
         for uid in user_dict:
             username, display_name = user_dict[uid]
-            sql_dict = {'uid': uid, 'username': username, 'display_name': display_name}
-            update_query = """
-                UPDATE user_names
-                SET username = :username
-                WHERE user_id = :uid AND username IS DISTINCT FROM :username;
-            """
-            insert_query = """
-                INSERT INTO user_names(user_id, date, username, display_name)
-                VALUES (:uid, current_timestamp, :username, :display_name);
-            """
-            with self.engine.connect() as con:
-                con.execute(text(update_query), sql_dict)
-                if display_name:
-                    con.execute(text(insert_query), sql_dict)
 
-    def get_chat_counts(self, n: int = 20, lquery: str = None, mtype: str = None, start: str = None, end: str = None) -> Tuple[Union[str, None], Union[None, BytesIO]]:
+            # O BD não é normalizado. As queries originais estão preservadas nos comentários.
+            # Sempre insere-se os dados do usuário de novo, e atualiza username se mudar.
+            # Não usamos Session.add para representar essas operações pois a semântica
+            # não é exatamente a mesma.
+            
+            # INSERT INTO user_names(user_id, date, username, display_name)
+            # VALUES (:uid, current_timestamp, :username, :display_name);
+            insert_query = insert(UserName).values(
+                user_id      = uid,
+                date         = current_timestamp(),
+                username     = username,
+                display_name = display_name,
+            )
+
+            # UPDATE user_names
+            # SET username = :username
+            # WHERE user_id = :uid AND username IS DISTINCT FROM :username;
+            update_query = (update(UserName)
+                .values(display_name = display_name)
+                .where(
+                    UserName.user_id == uid,
+                    UserName.display_name.is_distinct_from(display_name),
+                )
+            )
+
+            with self.engine.connect() as con:
+                _ = con.execute(update_query)
+                if display_name:
+                    _ = con.execute(insert_query)
+
+    def get_chat_counts(self,
+        n:      int = 20,
+        lquery: str = "",
+        mtype:  str = "",
+        start:  str = "",
+        end:    str = "",
+    ) -> StatsRunnerResult:
         """
         Get top chat users
         :param lquery: Limit results to lexical query (&, |, !, <n>)
@@ -156,65 +215,82 @@ class StatsRunner(object):
         :param start: Start timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         :param end: End timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         """
-        sql_dict = {}
-        query_conditions = []
-
         if n <= 0:
             raise HelpException(f'n must be greater than 0, got: {n}')
 
+        count_lbl = "msg_count"
+        count_col = count().label(count_lbl)
+
+        # SELECT "from_user", COUNT(*) as "count"
+        # FROM "messages_utc"
+        # {query_where}
+        # GROUP BY "from_user"
+        # ORDER BY "count" DESC;
+        query = (select(Message.from_user, count_col)
+            .group_by(Message.from_user)
+            .order_by(count_col.desc())
+        )
+
         if lquery:
-            query_conditions.append(f"text_index_col @@ to_tsquery( {random_quote(lquery)} )")
+            query = query.where(
+                Message.text_index_col
+                    .bool_op("@@")(to_tsquery(lquery)) # .match(lquery) uses plainto_tsquery instead
+            )
 
         if mtype:
-            if mtype not in ('text', 'sticker', 'photo', 'animation', 'video', 'voice', 'location', 'video_note',
-                             'audio', 'document', 'poll'):
+            valid_mtype = (
+                'text',  'sticker', 'photo',    'animation',
+                'video', 'voice',   'location', 'video_note',
+                'audio', 'document', 'poll'
+            )
+            if mtype not in valid_mtype:
                 raise HelpException(f'mtype {mtype} is invalid.')
-            query_conditions.append(f"""type = '{mtype}'""")
+            query = query.where(Message.type == mtype)
 
         if start:
-            sql_dict['start_dt'] = pd.to_datetime(start)
-            query_conditions.append("date >= :start_dt")
+            query = query.where(Message.date >= pd.to_datetime(start)) # pyright: ignore[reportUnknownMemberType]
 
         if end:
-            sql_dict['end_dt'] = pd.to_datetime(end)
-            query_conditions.append("date < :end_dt")
+            query = query.where(Message.date < pd.to_datetime(end)) # pyright: ignore[reportUnknownMemberType] 
 
-        query_where = ""
-        if query_conditions:
-            query_where = f"WHERE {' AND '.join(query_conditions)}"
-
-        query = f"""
-                    SELECT "from_user", COUNT(*) as "count"
-                    FROM "messages_utc"
-                    {query_where}
-                    GROUP BY "from_user"
-                    ORDER BY "count" DESC;
-                """
         with self.engine.connect() as con:
-            df = pd.read_sql_query(text(query), con, params=sql_dict, index_col='from_user')
+            df = pd.read_sql_query(query, con, index_col='from_user') # pyright: ignore[reportUnknownMemberType]
 
         if len(df) == 0:
-            return "Sem mensagens correspondente", None
+            return "Sem mensagens correspondente", None, None
 
-        user_df = pd.Series(self.users, name="user")
-        user_df = user_df.apply(lambda x: x[0])  # Take only @usernames
-        df = df.join(user_df)
-        df['Percent'] = df['count'] / df['count'].sum() * 100
-        df = df[['user', 'count', 'Percent']]
+        # Filters out @usernames
+        user_df = pd.Series(self.users, name="user") # pyright: ignore[reportUnknownVariableType]
+        user_df = user_df.apply(lambda x: x[0])      # pyright: ignore[reportUnknownLambdaType, reportUnknownMemberType, reportUnknownVariableType]
+        df = df.join(user_df)                        # pyright: ignore[reportUnknownMemberType]
+
+        msg_count      = df[count_lbl]                     # pyright: ignore[reportUnknownVariableType]
+        df['Percent']  = msg_count / msg_count.sum() * 100 # pyright: ignore[reportUnknownMemberType]
+        df             = df[['user', count_lbl, 'Percent']]
+
         if mtype:
             df.columns = ['User', mtype, 'Percent']
         elif lquery:
             df.columns = ['User', 'lquery', 'Percent']
         else:
             df.columns = ['User', 'Total Messages', 'Percent']
-#        df['User'] = df['User'].str.replace(r'[^\x00-\x7F]|[@]', "", regex=True)  # Drop emoji and @
 
-        out_text = df.iloc[:n].to_string(index=False, header=True, float_format=lambda x: f"{x:.1f}")
+        out_text  = "```\n"
+        out_text += df.iloc[:n].to_string( # pyright: ignore[reportUnknownMemberType]
+            index  = False,
+            header = True,
+            float_format = lambda x: f"{x:.1f}",
+        )
+        out_text += "```"
+        return out_text, None, None
 
-        return f"```\n{out_text}\n```", None, None
-
-    def get_chat_ecdf(self, lquery: str = None, mtype: str = None, start: str = None, end: str = None,
-                      log: bool = False) -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_chat_ecdf(self,
+        lquery: str  = "",
+        mtype:  str  = "",
+        start:  str  = "",
+        end:    str  = "",
+        log:    bool = False,
+    ) -> StatsRunnerResult:
         """
         Get message counts by number of users as an ECDF plot.
         :param lquery: Limit results to lexical query (&, |, !, <n>)
@@ -223,90 +299,104 @@ class StatsRunner(object):
         :param end: End timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         :param log: Plot with log scale.
         """
-        sql_dict = {}
-        query_conditions = []
+        count_lbl = "msg_count"
+        count_col = count().label(count_lbl)
+
+        # SELECT "from_user", COUNT(*) as "count"
+        # FROM "messages_utc"
+        # {query_where}
+        # GROUP BY "from_user"
+        # ORDER BY "count" DESC;
+        query = (select(Message.from_user, count_col)
+            .group_by(Message.from_user)
+            .order_by(count_col.desc())
+        )
 
         if lquery:
-            query_conditions.append(f"text_index_col @@ to_tsquery( {random_quote(lquery)} )")
+            query = query.where(
+                Message.text_index_col
+                    .bool_op("@@")(to_tsquery(lquery))
+            )
 
         if mtype:
-            if mtype not in ('text', 'sticker', 'photo', 'animation', 'video', 'voice', 'location', 'video_note',
-                             'audio', 'document', 'poll'):
-                raise HelpException(f'mtype {mtype} não é válido.')
-            query_conditions.append(f"""type = '{mtype}'""")
+            valid_mtype = (
+                'text',  'sticker', 'photo',    'animation',
+                'video', 'voice',   'location', 'video_note',
+                'audio', 'document', 'poll'
+            )
+            if mtype not in valid_mtype:
+                raise HelpException(f'mtype {mtype} is invalid.')
+            query = query.where(Message.type == mtype)
 
         if start:
-            sql_dict['start_dt'] = pd.to_datetime(start)
-            query_conditions.append("date >= :start_dt")
+            query = query.where(Message.date >= pd.to_datetime(start)) # pyright: ignore[reportUnknownMemberType]
 
         if end:
-            sql_dict['end_dt'] = pd.to_datetime(end)
-            query_conditions.append("date < :end_dt")
-
-        query_where = ""
-        if query_conditions:
-            query_where = f"WHERE {' AND '.join(query_conditions)}"
-
-        query = f"""
-                    SELECT "from_user", COUNT(*) as "count"
-                    FROM "messages_utc"
-                    {query_where}
-                    GROUP BY "from_user"
-                    ORDER BY "count" DESC;
-                """
+            query = query.where(Message.date < pd.to_datetime(end)) # pyright: ignore[reportUnknownMemberType] 
 
         with self.engine.connect() as con:
-            df = pd.read_sql_query(text(query), con, params=sql_dict)
+            df = pd.read_sql_query(query, con) # pyright: ignore[reportUnknownMemberType] 
         
-        user_df = pd.Series(self.users, index=self.users.keys())
-        user_df = pd.Series(self.users, name="user")
-        user_df = user_df.apply(lambda x: x[0])  # Take only @usernames
-        df = df.join(user_df, on='from_user')
+        user_df = pd.Series(self.users, name="user") # pyright: ignore[reportUnknownVariableType]
+        user_df = user_df.apply(lambda x: x[0])      # pyright: ignore[reportUnknownMemberType, reportUnknownLambdaType, reportUnknownVariableType]
+        df = df.join(user_df, on='from_user')        # pyright: ignore[reportUnknownMemberType]
         
         if len(df) == 0:
-            return "No matching messages", None
+            return "No matching messages", None, None
 
         fig = Figure(constrained_layout=True)
-        subplot = fig.subplots()
+        subplot = fig.subplots()  # pyright: ignore[reportUnknownMemberType] 
 
-        sns.ecdfplot(df, y='count', stat='count', log_scale=log, ax=subplot)
-        subplot.set_xlabel('Usuários')
-        subplot.set_ylabel('Mensagens')
+        _ = sns.ecdfplot(df, y=count_lbl, stat='count', log_scale=log, ax=subplot)
+        _ = subplot.set_xlabel('Usuários')  # pyright: ignore[reportUnknownMemberType] 
+        _ = subplot.set_ylabel('Mensagens') # pyright: ignore[reportUnknownMemberType] 
 
         if lquery:
-            subplot.set_title(f"Mensagens por Usuário por {lquery}")
+            _ = subplot.set_title(f"Mensagens por Usuário por {lquery}") # pyright: ignore[reportUnknownMemberType] 
         else:
-            subplot.set_title("Mensagens por Usuário")
+            _ = subplot.set_title("Mensagens por Usuário") # pyright: ignore[reportUnknownMemberType] 
 
         sns.despine(fig=fig)
 
         bio = output_fig(fig)
 
-        user_list = ', '.join([escape_markdown(df.at[i, 'user']) for i in range(0,5)]).replace("@","")
-        lgd  = "Nesse gráfico podemos ver a distribuição acumulada de mensagens por usuários, ou seja, quantos usuários contribuíram para dada quantidade de mensagens.\n\n"
+        user_list = (', '
+            .join([
+                escape_markdown(df.at[i, 'user']) # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+                    for i in range(0,5)
+            ])
+            .replace("@","")
+        )
+        lgd  = "Nesse gráfico podemos ver a distribuição acumulada de mensagens "
+        lgd += "por usuários, ou seja, quantos usuários contribuíram para dada "
+        lgd += "quantidade de mensagens.\n\n"
         lgd += f"Os cinco que mais contribuíram para o total de mensagens foram: {user_list}."
         return lgd, None, bio
 
-    def get_counts_by_hour(self, user: Tuple[int, str] = None, lquery: str = None, start: str = None, end: str = None) \
-            -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_counts_by_hour(self,
+        user:   Optional[tuple[int, str]] = None,
+        lquery: Optional[str] = None,
+        start:  Optional[str] = None,
+        end:    Optional[str] = None
+    ) -> StatsRunnerResult:
         """
         Get plot of messages for hours of the day
         :param lquery: Limit results to lexical query (&, |, !, <n>)
         :param start: Start timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         :param end: End timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         """
-        query_conditions = []
-        sql_dict = {}
+        query_conditions: list[str]   = []
+        sql_dict: dict[str, Union[int, datetime]] = {}
 
         if lquery:
             query_conditions.append(f"text_index_col @@ to_tsquery( {random_quote(lquery)} )")
 
         if start:
-            sql_dict['start_dt'] = pd.to_datetime(start)
-            query_conditions.append("date >= :start_dt")
+            sql_dict['start_dt'] = pd.to_datetime(start) # pyright: ignore[reportUnknownMemberType]  
+            query_conditions.append("date >= :start_dt")  
 
         if end:
-            sql_dict['end_dt'] = pd.to_datetime(end)
+            sql_dict['end_dt'] = pd.to_datetime(end)  # pyright: ignore[reportUnknownMemberType]   
             query_conditions.append("date < :end_dt")
 
         if user:
@@ -326,59 +416,98 @@ class StatsRunner(object):
                  """
 
         with self.engine.connect() as con:
-            df = pd.read_sql_query(text(query), con, params=sql_dict)
+            df = pd.read_sql_query(text(query), con, params=sql_dict)  # pyright: ignore[reportUnknownMemberType]   
 
         if len(df) == 0:
-            return "Sem mensagem correspondente", None
+            return "Sem mensagem correspondente", None, None
 
-        df['day'] = pd.to_datetime(df.day)
-        df['day'] = df.day.dt.tz_convert(self.tz)
-        df = df.set_index('day')
+        df['day'] = pd.to_datetime(df.day) # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]   
+        df['day'] = df.day.dt.tz_convert(self.tz)  # pyright: ignore[reportUnknownMemberType]
+        df = df.set_index('day') # pyright: ignore[reportUnknownMemberType]
         df = df.asfreq('h', fill_value=0)  # Insert 0s for periods with no messages
+        assert type(df) == pd.DataFrame
+        assert type(df.index) == AxisProperty
 
         if (df.index.max() - df.index.min()) < pd.Timedelta('24 hours'):  # Deal with data covering < 24 hours
-            df = df.reindex(pd.date_range(df.index.min(), periods=24, freq='h'))
+            df = df.reindex(pd.date_range(df.index.min(), periods=24, freq='h')) # pyright: ignore[reportUnknownMemberType]
+            assert type(df.index) == AxisProperty
 
         df['hour'] = df.index.hour
 
         if user:
             # Aggregate over 1 week periods
-            df = df.groupby('hour').resample('7D').sum().drop(columns='hour')
-            df['hour'] = df.index.get_level_values('hour')
+            df = df.groupby('hour').resample('7D').sum().drop(columns='hour') # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType] 
+            assert type(df) == pd.DataFrame # pyright: ignore[reportUnknownArgumentType]  
+            df['hour'] = df.index.get_level_values('hour') # pyright: ignore[reportUnknownMemberType] 
 
         fig = Figure(constrained_layout=True)
-        subplot = fig.subplots()
+        subplot = fig.subplots() # pyright: ignore[reportUnknownMemberType] 
 
-        plot_common_kwargs = dict(x='hour', y='messages', hue='hour', data=df, ax=subplot, legend=False,
-                                  palette='flare')
-        sns.stripplot(jitter=.4, size=2, alpha=.5, zorder=1, **plot_common_kwargs)
-        sns.boxplot(whis=1, showfliers=False, whiskerprops={"zorder": 10}, boxprops={"zorder": 10}, zorder=10,
-                    **plot_common_kwargs)
+        CommonKeywordArgs = TypedDict("CommonKeywordArgs", {
+            "x":       str,
+            "y":       str,
+            "hue":     str,
+            "data":    DataFrame,
+            "ax":      Axes,
+            "legend":  bool,
+            "palette": str,
+        })
 
-        subplot.set_ylim(bottom=0, top=df['messages'].quantile(0.999, interpolation='higher'))
+        plot_common_kwargs: CommonKeywordArgs = {
+            "x":      "hour",
+            "y":      "messages",
+            "hue":    "hour",
+            "data":    df,
+            "ax":      subplot,
+            "legend":  False,
+            "palette": "flare"
+        }
+        
+        _ = sns.stripplot(
+            jitter = 0.4,
+            size   = 2,
+            alpha  = 0.5,
+            zorder = 1,
+            **plot_common_kwargs
+        )
 
-        subplot.axvspan(11.5, 23.5, zorder=0, color=(0, 0, 0, 0.05))
-        subplot.set_xlim(-1, 24)  # Set explicitly to plot properly even with missing data
+        _ = sns.boxplot(
+            whis         = 1,
+            showfliers   = False,
+            whiskerprops = {"zorder": 10},
+            boxprops     = {"zorder": 10},
+            zorder       = 10,
+            **plot_common_kwargs
+        )
+        
+        top = df['messages'].quantile(0.999, interpolation='higher') # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType] 
+        assert type(top) == float                                    # pyright: ignore[reportUnknownArgumentType]
+        _ = subplot.set_ylim(bottom=0, top=top)
+
+        _ = subplot.axvspan(11.5, 23.5, zorder=0, color=(0, 0, 0, 0.05)) # pyright: ignore[reportUnknownMemberType]  
+        _ = subplot.set_xlim(-1, 24)  # Set explicitly to plot properly even with missing data
 
         if lquery:
-            subplot.set_title(f"Mensagens por Hora para {lquery}")
+            _ = subplot.set_title(f"Mensagens por Hora para {lquery}") # pyright: ignore[reportUnknownMemberType]   
         elif user:
-            subplot.set_title(f"Mensagens por Hora para {user[1]}")
+            _ = subplot.set_title(f"Mensagens por Hora para {user[1]}") # pyright: ignore[reportUnknownMemberType]   
         if user:
-            subplot.set_ylabel('Mensagens por Semana')
+            _ = subplot.set_ylabel('Mensagens por Semana') # pyright: ignore[reportUnknownMemberType]   
         else:
-            subplot.set_ylabel('Mensagens por Dia')
-            subplot.set_title("Mensagens por Hora")
+            _ = subplot.set_ylabel('Mensagens por Dia') # pyright: ignore[reportUnknownMemberType]   
+            _ = subplot.set_title("Mensagens por Hora") # pyright: ignore[reportUnknownMemberType]   
 
         sns.despine(fig=fig)
-
         bio = output_fig(fig)
-        
-        lgd = 'Esse gráfico mostra a quantidade de mensagens por hora!'
         return None, None, bio
 
-    def get_counts_by_day(self, user: Tuple[int, str] = None, lquery: str = None, start: str = None, end: str = None,
-                          plot: str = None) -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_counts_by_day(self,
+        user:   Optional[tuple[int, str]] = None,
+        lquery: Optional[str] = None,
+        start:  Optional[str] = None,
+        end:    Optional[str] = None,
+        plot:   Optional[str] = None,
+    ) -> StatsRunnerResult:
         """
         Get plot of messages for days of the week
         :param lquery: Limit results to lexical query (&, |, !, <n>)
@@ -386,18 +515,18 @@ class StatsRunner(object):
         :param end: End timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         :param plot: Type of plot. ('box' or 'violin')
         """
-        query_conditions = []
-        sql_dict = {}
+        query_conditions: list[str] = []
+        sql_dict: dict[str, Union[datetime, int]] = {}
 
         if lquery:
             query_conditions.append(f"text_index_col @@ to_tsquery( {random_quote(lquery)} )")
 
         if start:
-            sql_dict['start_dt'] = pd.to_datetime(start)
+            sql_dict['start_dt'] = pd.to_datetime(start) # pyright: ignore[reportUnknownMemberType]
             query_conditions.append("date >= :start_dt")
 
         if end:
-            sql_dict['end_dt'] = pd.to_datetime(end)
+            sql_dict['end_dt'] = pd.to_datetime(end) # pyright: ignore[reportUnknownMemberType]  
             query_conditions.append("date < :end_dt")
 
         if user:
@@ -418,51 +547,78 @@ class StatsRunner(object):
                  """
 
         with self.engine.connect() as con:
-            df = pd.read_sql_query(text(query), con, params=sql_dict)
+            df = pd.read_sql_query(text(query), con, params=sql_dict) # pyright: ignore[reportUnknownMemberType]    
 
         if len(df) == 0:
-            return "Sem mensagem correspondente", None
+            return "Sem mensagem correspondente", None, None
 
-        df['day'] = pd.to_datetime(df.day)
-        df['day'] = df.day.dt.tz_convert(self.tz)
-        df = df.set_index('day')
+        df['day'] = pd.to_datetime(df.day)        # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+        df['day'] = df.day.dt.tz_convert(self.tz) # pyright: ignore[reportUnknownMemberType] 
+        df = df.set_index('day')                  # pyright: ignore[reportUnknownMemberType] 
         df = df.asfreq('d', fill_value=0)  # Fill periods with no messages
+
+        assert type(df) == pd.DataFrame
+        assert type(df.index) == AxisProperty
+
         if (df.index.max() - df.index.min()) < pd.Timedelta('7 days'):  # Deal with data covering < 7 days
-            df = df.reindex(pd.date_range(df.index.min(), periods=7, freq='d'))
+            df = df.reindex(pd.date_range(df.index.min(), periods=7, freq='d')) # pyright: ignore[reportUnknownMemberType]  
+            assert type(df.index) == AxisProperty
+
         df['dow'] = df.index.weekday
         df['day_name'] = df.index.day_name()
-        df = df.sort_values('dow')  # Make sure start is Monday
+        df = df.sort_values('dow')  # Make sure start is Monday # pyright: ignore[reportUnknownMemberType]   
 
         fig = Figure(constrained_layout=True)
-        subplot = fig.subplots()
+        subplot = fig.subplots() # pyright: ignore[reportUnknownMemberType]   
         if plot == 'box':
-            sns.boxplot(x='day_name', y='messages', data=df, whis=1, showfliers=False, ax=subplot, color=sns.color_palette()[2])
+            _ = sns.boxplot(
+                x    = 'day_name',
+                y    = 'messages',
+                data = df,
+                whis = 1,
+                showfliers = False,
+                ax    = subplot,
+                color = sns.color_palette()[2],
+            )
         elif plot == 'violin' or plot is None:
-            sns.violinplot(x='day_name', y='messages', data=df, cut=0, inner="box", scale='width', ax=subplot, color=sns.color_palette()[2])
+            _ = sns.violinplot(
+                x    = 'day_name',
+                y    = 'messages',
+                data = df,
+                cut  = 0,
+                inner = "box",
+                scale = 'width',
+                ax   = subplot,
+                color = sns.color_palette()[2]
+            )
         else:
             raise HelpException("plot precisa ser 'box' ou 'violin'")
-        subplot.axvspan(4.5, 6.5, zorder=0, color=(0, .8, 0, 0.1))
-        subplot.set_xlabel('')
-        subplot.set_ylabel('Mensagens por dia')
-        subplot.set_xlim(-0.5, 6.5)  # Need to set this explicitly to show full range of days with na data
+
+        _ = subplot.axvspan(4.5, 6.5, zorder=0, color=(0, .8, 0, 0.1)) # pyright: ignore[reportUnknownMemberType]   
+        _ = subplot.set_xlabel('')                                     # pyright: ignore[reportUnknownMemberType]   
+        _ = subplot.set_ylabel('Mensagens por dia')                    # pyright: ignore[reportUnknownMemberType]   
+        _ = subplot.set_xlim(-0.5, 6.5)  # Need to set this explicitly to show full range of days with na data
 
         if lquery:
-            subplot.set_title(f"Mensagens por Dia da Semana para {lquery}")
+            _ = subplot.set_title(f"Mensagens por Dia da Semana para {lquery}")  # pyright: ignore[reportUnknownMemberType]   
         elif user:
-            subplot.set_title(f"Mensagens por Dia da Semana para {user[1]}")
+            _ = subplot.set_title(f"Mensagens por Dia da Semana para {user[1]}") # pyright: ignore[reportUnknownMemberType]   
         else:
-            subplot.set_title("Mensagens por Dia da Semana")
+            _ = subplot.set_title("Mensagens por Dia da Semana")                 # pyright: ignore[reportUnknownMemberType]   
 
         sns.despine(fig=fig)
 
         bio = output_fig(fig)
-        
         lgd = 'Esse gráfico mostra a quantidade de mensagens no grupo por dia da semana!'
         
         return lgd, None, bio
 
-    def get_week_by_hourday(self, lquery: str = None, user: Tuple[int, str] = None, start: str = None, end: str = None) \
-            -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_week_by_hourday(self,
+        lquery: Optional[str]             = None,
+        user:   Optional[tuple[int, str]] = None,
+        start:  Optional[str]             = None,
+        end:    Optional[str]             = None
+    ) -> tuple[Optional[str], Optional[bool], Optional[BytesIO]]:
         """
         Get plot of messages over the week by day and hour.
         :param lquery: Limit results to lexical query (&, |, !, <n>)
@@ -503,7 +659,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return "Sem mensagens.", None
+            return "Sem mensagens.", None, None
 
         df['msg_time'] = pd.to_datetime(df.msg_time)
         df['msg_time'] = df.msg_time.dt.tz_convert(self.tz)
@@ -543,13 +699,15 @@ class StatsRunner(object):
             lgd = 'Nesse gráfico temos a relação das mensagens por hora por dia desde que comecei a contar\!Quanto mais escuro for o quadrado, mais foi falado naquele dia da semana em relação a hora\.'
             
         bio = output_fig(fig)
-        
         return lgd, None, bio
 
-    def get_message_history(self, user: Tuple[int, str] = None, lquery: str = None, averages: int = None,
-                            start: str = None,
-                            end: str = None) \
-            -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_message_history(self,
+        user:     Optional[tuple[int, str]] = None,
+        lquery:   Optional[str] = None,
+        averages: Optional[int] = None,
+        start:    Optional[str] = None,
+        end:      Optional[str] = None,
+    ) -> tuple[Optional[str], Optional[bool], Optional[BytesIO]]:
         """
         Make a plot of message history over time
         :param lquery: Limit results to lexical query (&, |, !, <n>)
@@ -596,7 +754,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return "Sem mensagens correspondentes", None
+            return "Sem mensagens correspondentes", None, None
 
         df['day'] = pd.to_datetime(df.day)
         df['day'] = df.day.dt.tz_convert(self.tz)
@@ -633,8 +791,11 @@ class StatsRunner(object):
 
         return None, None, bio
 
-    def get_title_history(self, start: str = None, end: str = None, duration: bool = False) \
-            -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_title_history(self,
+        start:    Optional[str] = None,
+        end:      Optional[str] = None,
+        duration: bool          = False,
+    ) -> StatsRunnerResult:
         """
         Make a plot of group titles history over time
         :param start: Start timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
@@ -668,7 +829,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return "No chat titles in range", None
+            return "No chat titles in range", None, None
 
         df['idx'] = np.arange(len(df))
         df['diff'] = -df['date'].diff(-1)
@@ -739,12 +900,11 @@ class StatsRunner(object):
 
         return lgd, False, bio
 
-    def get_user_summary(self, autouser=None, **kwargs) -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_user_summary(self, user: tuple[int, str]) -> StatsRunnerResult:
         """
         Get summary of a user.
         """
-        user: Tuple[int, str] = kwargs['user']
-        sql_dict = {'user': user[0]}
+        sql_dict = { 'user': user[0] }
 
         count_query = """
                          SELECT COUNT(*)
@@ -825,8 +985,15 @@ class StatsRunner(object):
 
         return f"Dados do usuário {user[1].lstrip('@')}: ```\n{out_text}\n```", None, None
 
-    def get_user_correlation(self, start: str = None, end: str = None, agg: bool = True, c_type: str = None,
-                             n: int = 5, thresh: float = 0.05, autouser=None, **kwargs) -> Tuple[str, None]:
+    def get_user_correlation(self,
+        user:   tuple[int, str],
+        start:  Optional[str] = None,
+        end:    Optional[str] = None,
+        agg:    bool          = True,
+        c_type: Optional[str] = None,
+        n:      int           = 5,
+        thresh: float         = 0.05,
+    ) -> StatsRunnerResult:
         """
         Return correlations between you and other users.
         :param start: Start timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
@@ -836,7 +1003,6 @@ class StatsRunner(object):
         :param n: Show n highest and lowest correlation scores
         :param thresh: Fraction of time bins that have data for both users to be considered valid (0-1)
         """
-        user: Tuple[int, str] = kwargs['user']
         query_conditions = []
         sql_dict = {}
 
@@ -882,7 +1048,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return 'Sem mensagens na pesquisa.', None
+            return 'Sem mensagens na pesquisa.', None, None
 
         df['msg_time'] = pd.to_datetime(df.msg_time)
         df['msg_time'] = df.msg_time.dt.tz_convert(self.tz)
@@ -932,8 +1098,15 @@ class StatsRunner(object):
 
         return f"Correlação do {escape_markdown(user[1])} com outros usuários:\n```\n{out_text}\n```", None, None
 
-    def get_message_deltas(self, lquery: str = None, start: str = None, end: str = None, n: int = 10, thresh: int = 500,
-                           autouser=None, **kwargs) -> Tuple[Union[str, None], Union[None, BytesIO]]:
+    def get_message_deltas(self,
+        user:   tuple[int, str],
+        lquery: Optional[str] = None,
+        start:  Optional[str] = None,
+        end:    Optional[str] = None,
+        n:      int           = 10,
+        thresh: int           = 500,
+        **kwargs
+    ) -> StatsRunnerResult:
         """
         Return the median difference in message time between you and other users.
         :param lquery: Limit results to lexical query (&, |, !, <n>)
@@ -942,7 +1115,6 @@ class StatsRunner(object):
         :param n: Show n highest and lowest correlation scores
         :param thresh: Only consider users with at least this many message group pairs with you
         """
-        user: Tuple[int, str] = kwargs['user']
         query_conditions = []
         sql_dict = {}
 
@@ -967,7 +1139,7 @@ class StatsRunner(object):
         if thresh < 0:
             raise HelpException(f'n não pode ser negativo')
 
-        def fetch_mean_delta(me: int, other: int, where: str, sql_dict: dict) -> Tuple[timedelta, int]:
+        def fetch_mean_delta(me: int, other: int, where: str, sql_dict: dict) -> tuple[timedelta, int]:
             query = f"""
                     select percentile_cont(0.5) within group (order by t_delta), count(t_delta)
                     from(
@@ -993,7 +1165,7 @@ class StatsRunner(object):
 
             with self.engine.connect() as con:
                 result = con.execute(text(query), sql_dict)
-            output: Tuple[timedelta, int] = result.fetchall()[0]
+            output: tuple[timedelta, int] = result.fetchall()[0]
 
             return output
 
@@ -1013,13 +1185,18 @@ class StatsRunner(object):
 
         return f"**Tempo médio entre as mensagens de {escape_markdown(user[1])} e:**\n```\n{out_text}\n```", None, None
 
-    def get_type_stats(self, start: str = None, end: str = None, autouser=None, **kwargs) -> Tuple[str, None]:
+    def get_type_stats(self,
+        start: Optional[str] = None,
+        end:   Optional[str] = None,
+        autouser             = None,
+        **kwargs
+    ) -> StatsRunnerResult:
         """
         Print table of message statistics by type.
         :param start: Start timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         :param end: End timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         """
-        user: Tuple[int, str] = kwargs['user']
+        user: tuple[int, str] = kwargs['user']
         query_conditions = []
         sql_dict = {}
 
@@ -1049,7 +1226,7 @@ class StatsRunner(object):
             df = pd.read_sql_query(text(query), con, params=sql_dict)
 
         if len(df) == 0:
-            return 'Sem mensagens no período', None
+            return 'Sem mensagens no período', None, None
 
         df['Group Percent'] = df['count'] / df['count'].sum() * 100
         df.columns = ['type', 'Group Count', 'Group Percent']
@@ -1086,12 +1263,17 @@ class StatsRunner(object):
         out_text = df.to_string(index=False, header=True, float_format=lambda x: f"{x:.1f}")
 
         if user:
-            return f"**Mensagens por tipo \- {escape_markdown(user[1])} vs grupo:**\n```\n{out_text}\n```", None, None
+            return f"**Mensagens por tipo - {escape_markdown(user[1])} vs grupo:**\n```\n{out_text}\n```", None, None
         else:
             return f"**Mensagens por tipo:**\n```\n{out_text}\n```", None, None
 
-    def get_word_stats(self, n: int = 4, limit: int = 20, start: str = None, end: str = None,
-                       user: Tuple[int, str] = None, **kwargs) -> Tuple[str, None]:
+    def get_word_stats(self,
+        n:     int = 4,
+        limit: int = 20,
+        start: Optional[str] = None,
+        end:   Optional[str] = None,
+        user:  Optional[tuple[int, str]] = None,
+    ) -> tuple[str, None, None]:
         """
         Print table of lexeme statistics.
         :param n: Only consider lexemes with length of at least n
@@ -1100,48 +1282,63 @@ class StatsRunner(object):
         :param end: End timestamp (e.g. 2019, 2019-01, 2019-01-01, "2019-01-01 14:21")
         """
 
-        q = select(messages.c['text_index_col'])
+        tsquery = select(Message.text_index_col)
 
         if user:
-            q = q.where(messages.c['from_user'] == user[0])
-        if start:
-            q = q.where(messages.c['date'] >= str(pd.to_datetime(start)))
-        if end:
-            q = q.where(messages.c['date'] < str(pd.to_datetime(end)))
+            tsquery = tsquery.where(Message.from_user == user[0])
 
-        q = q.scalar_subquery()
-        f = TsStat(q)
-        stmt = select(f.columns['word'], f.columns['ndoc'], f.columns['nentry']) \
-            .select_from(f)
+        start = "2024-01-01"
+        if start:
+            tsquery = tsquery.where(Message.date >= pd.to_datetime(start)) # pyright: ignore[reportUnknownMemberType]
+
+        if end:
+            tsquery = tsquery.where(Message.date < pd.to_datetime(end))    # pyright: ignore[reportUnknownMemberType]
+
+        tsquery = tsquery.scalar_subquery()
+        tsstat  = TsStat(tsquery)
+
+        stmt = (
+            select(tsstat.word, tsstat.ndoc, tsstat.nentry)
+                .select_from(tsstat)
+        )
 
         if n:
-            stmt = stmt.where(func.length(f.columns['word']) >= n)
+            stmt = stmt.where(func.length(tsstat.word) >= n)
 
-        stmt = stmt.order_by(f.columns['nentry'].desc(),
-                             f.columns['ndoc'].desc(),
-                             f.columns['word'])
+        stmt = stmt.order_by(
+            tsstat.nentry.desc(),
+            tsstat.ndoc.desc(),
+            tsstat.word,
+        )
 
         if limit:
-            stmt = stmt.limit(limit) \
-                .compile(dialect=postgresql.dialect())
+            stmt = stmt.limit(limit)
 
         with self.engine.connect() as con:
-            df = pd.read_sql_query(stmt, con)
+            df = pd.read_sql_query(stmt, con) # pyright: ignore[reportUnknownMemberType]
 
         if len(df) == 0:
-            return 'No messages in range', None
+            return 'No messages in range', None, None
 
         df.columns = ['Lexeme', 'Messages', 'Uses']
 
-        out_text = df.to_string(index=False, header=True, float_format=lambda x: f"{x:.1f}")
+        out_text = df.to_string( # pyright: ignore[reportUnknownMemberType]
+            index  = False,
+            header = True,
+            float_format = lambda x: f"{x:.1f}"
+        )
 
         if user:
             return f"**Most frequently used lexemes, {escape_markdown(user[1].lstrip('@'))}\n```\n{out_text}\n```", None, None
         else:
             return f"**Most frequently used lexemes, all users:**\n```\n{out_text}\n```", None, None
 
-    def get_random_message(self, lquery: str = None, start: str = None, end: str = None,
-                           user: Tuple[int, str] = None, **kwargs) -> Tuple[str, None]:
+    def get_random_message(self,
+        lquery: Optional[str] = None,
+        start:  Optional[str] = None,
+        end:    Optional[str] = None,
+        user:   Optional[tuple[int, str]] = None,
+    ) -> StatsRunnerResult:
         """
         Display a random message.
         :param lquery: Limit results to lexical query (&, |, !, <n>)
@@ -1184,13 +1381,14 @@ class StatsRunner(object):
         try:
             date, from_user, out_text = result.fetchall()[0]
         except IndexError:
-            return "Nenhuma mensagem correspondente", None
+            return "Nenhuma mensagem correspondente", None, None
 
-        return f"*No dia {escape_markdown(date.strftime('%d/%m/%Y'))}, " \
-               f"{escape_markdown(self.users[from_user][0]).lstrip('@')}" \
-               f" nos iluminou com isso:*\n" \
-               f"{escape_markdown(out_text)}\n", \
-            None, None
+        return (
+              f"*No dia {escape_markdown(date.strftime('%d/%m/%Y'))}, "
+            + f"{escape_markdown(self.users[from_user][0]).lstrip('@')}"
+            + f" nos iluminou com isso:*\n"
+            + f"{escape_markdown(out_text)}\n"
+        ), None, None
 
 
 def get_parser(runner: StatsRunner) -> InternalParser:
@@ -1198,16 +1396,26 @@ def get_parser(runner: StatsRunner) -> InternalParser:
     parser.set_defaults(func=runner.get_chat_counts)
     subparsers = parser.add_subparsers(title="Statistics:")
 
-    parser.add_argument('-v', '--version', action='version', version=__version__)
+    assert __version__
+    _ = parser.add_argument('-v', '--version', action='version', version=__version__)
 
     for name, func in runner.allowed_methods.items():
         try:
-            doc = inspect.getdoc(getattr(runner, func)).splitlines()
+            parser_attr: Callable[..., Any] = getattr(runner, func)
         except AttributeError:
-            doc = None
+            logger.error(f"Unknown function {func}")
+            continue # Invalid function, skip
+
+        parser_doc = inspect.getdoc(parser_attr)
+        if parser_doc:
+            doc = parser_doc.splitlines()
+        else:
+            doc = [ "" ]
+
+
         subparser = subparsers.add_parser(name, help=doc[0])
-        subparser.set_defaults(func=getattr(runner, func))
-        f_args = inspect.signature(getattr(runner, func)).parameters
+        subparser.set_defaults(func=parser_attr)
+        f_args = inspect.signature(parser_attr).parameters
 
         for _, arg in f_args.items():
             arg: inspect.Parameter
@@ -1215,11 +1423,11 @@ def get_parser(runner: StatsRunner) -> InternalParser:
                 continue
             if arg.name == 'user':
                 group = subparser.add_mutually_exclusive_group()
-                group.add_argument('-me', action='store_true', help='calculate stats for yourself')
-                group.add_argument('-user', type=int, help=argparse.SUPPRESS)
+                _ = group.add_argument('-me', action='store_true', help='calculate stats for yourself')
+                _ = group.add_argument('-user', type=int, help=argparse.SUPPRESS)
             elif arg.name == 'autouser':
                 subparser.set_defaults(me=True)
-                subparser.add_argument('-user', type=int, help=argparse.SUPPRESS)
+                _ = subparser.add_argument('-user', type=int, help=argparse.SUPPRESS)
             elif arg.name == 'kwargs':
                 pass
             else:
@@ -1230,10 +1438,16 @@ def get_parser(runner: StatsRunner) -> InternalParser:
                         if match:
                             arg_doc = match.group(1)
 
-                if arg.annotation == bool:
-                    subparser.add_argument(f"-{arg.name}".replace('_', '-'), action='store_true', help=arg_doc)
+                if isinstance(arg.annotation, bool): # pyright: ignore[reportAny]
+                    _ = subparser.add_argument(f"-{arg.name}".replace('_', '-'),
+                        action = 'store_true',
+                        help   = arg_doc,
+                    )
                 else:
-                    subparser.add_argument(f"-{arg.name}".replace('_', '-'), type=arg.annotation, help=arg_doc,
-                                           default=arg.default)
+                    _ = subparser.add_argument(f"-{arg.name}".replace('_', '-'),
+                        type = arg.annotation, # pyright: ignore[reportAny] 
+                        help = arg_doc,
+                        default = arg.default, # pyright: ignore[reportAny] 
+                    )
 
     return parser

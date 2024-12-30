@@ -42,6 +42,7 @@ logging.basicConfig(
 )
 
 logging.getLogger('httpx').setLevel(logging.WARNING)  # Mute normal http requests
+logging.getLogger("sqlalchemy.engine").setLevel(logging.INFO)
 
 logger = logging.getLogger(__name__)
 logger.info("Python version: %s", sys.version)
